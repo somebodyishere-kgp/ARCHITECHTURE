@@ -56,3 +56,27 @@
   border-left: 1px solid var(--border);
   overflow-y: auto;
 }
+
+/* ─── Left Sidebar (FreeCAD Features) ──────────────────────────────────── */
+.threed-sidebar {
+  width: 140px; min-width: 140px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  padding: 8px 0; gap: 0; overflow-y: auto; overflow-x: hidden;
+  z-index: 10;
+}
+
+.sidebar-btn {
+  width: calc(100% - 16px);
+  margin: 2px 8px;
+  height: 32px;
+  border-radius: 6px; border: none;
+  background: transparent; color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: flex-start;
+  gap: 10px; padding: 0 12px;
+  cursor: pointer; transition: all var(--t-fast);
+  font-size: 12px;
+}
+.sidebar-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sidebar-btn:active { background: var(--border); }

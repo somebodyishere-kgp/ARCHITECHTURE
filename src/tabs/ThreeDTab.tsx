@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { invoke } from '@tauri-apps/api/core';
-import { RefreshCw, Sun, Camera, Layers, Settings2, Play } from 'lucide-react';
+import { RefreshCw, Sun, Camera, Layers, Settings2, Play, Box, FileText, Download } from 'lucide-react';
 import { FloorPlan, ADFProject } from '../lib/adf';
 import './ThreeDTab.css';
 
@@ -34,6 +34,7 @@ export default function ThreeDTab({ floor, project, onStatusChange }: Props) {
   const [hasModel, setHasModel]         = useState(false);
   const [renderMode, setRenderMode]     = useState<'solid' | 'wireframe' | 'clay'>('solid');
   const [sceneData, setSceneData]       = useState<Record<string, unknown> | null>(null);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
 
   // Initialize Three.js scene
   useEffect(() => {
@@ -165,6 +166,49 @@ export default function ThreeDTab({ floor, project, onStatusChange }: Props) {
     }
   }, []);
 
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    if (!sceneRef.current || !cameraRef.current || !mountRef.current) return;
+    
+    // Ignore clicks if we are dragging
+    const dx = e.clientX - lastMouse.current.x;
+    const dy = e.clientY - lastMouse.current.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) return;
+
+    const rect = mountRef.current.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, cameraRef.current);
+
+    const intersects = raycaster.intersectObjects(sceneRef.current.children, true);
+    const archObject = intersects.find(hit => hit.object.userData['archflow']);
+    
+    if (archObject) {
+      setSelectedObjectId(archObject.object.userData['id']);
+      
+      // Reset highlights
+      sceneRef.current.children.forEach(c => {
+        if (c.userData['archflow'] && c instanceof THREE.Mesh) {
+          (c.material as THREE.MeshPhongMaterial).emissive.setHex(0x000000);
+        }
+      });
+      // Highlight selected
+      if (archObject.object instanceof THREE.Mesh) {
+        (archObject.object.material as THREE.MeshPhongMaterial).emissive.setHex(0x223344);
+      }
+    } else {
+      setSelectedObjectId(null);
+      sceneRef.current.children.forEach(c => {
+        if (c.userData['archflow'] && c instanceof THREE.Mesh) {
+          (c.material as THREE.MeshPhongMaterial).emissive.setHex(0x000000);
+        }
+      });
+    }
+  }, []);
+
   // Generate / update the 3D model from floor plan
   const handleGenerate3D = async () => {
     setIsGenerating(true);
@@ -235,6 +279,36 @@ export default function ThreeDTab({ floor, project, onStatusChange }: Props) {
 
   return (
     <div className="threed-tab">
+      {/* Left Toolbar (FreeCAD Features) */}
+      <div className="threed-sidebar">
+        <div className="tool-group">
+          <div className="tool-group-label" style={{textAlign: 'left', paddingLeft: 12}}>BIM Elements</div>
+          <button className="sidebar-btn"><Box size={14}/> <span>Wall</span></button>
+          <button className="sidebar-btn"><Layers size={14}/> <span>Slab</span></button>
+          <button className="sidebar-btn"><Box size={14}/> <span>Column</span></button>
+        </div>
+        <div className="divider" style={{width:'80%', margin:'8px auto', background:'var(--border)', height:1}} />
+        <div className="tool-group">
+          <div className="tool-group-label" style={{textAlign: 'left', paddingLeft: 12}}>TechDraw</div>
+          <button className="sidebar-btn" onClick={() => onStatusChange('Generating TechDraw Sections via FreeCAD...')}>
+            <FileText size={14}/> <span>Gen. Section</span>
+          </button>
+          <button className="sidebar-btn" onClick={() => onStatusChange('Generating TechDraw Elevations via FreeCAD...')}>
+            <FileText size={14}/> <span>Gen. Elevation</span>
+          </button>
+        </div>
+        <div className="divider" style={{width:'80%', margin:'8px auto', background:'var(--border)', height:1}} />
+        <div className="tool-group">
+          <div className="tool-group-label" style={{textAlign: 'left', paddingLeft: 12}}>Export / QTO</div>
+          <button className="sidebar-btn" onClick={() => onStatusChange('Calculating Volume / BOQ via FreeCAD...')}>
+            <Settings2 size={14}/> <span>Quantities (QTO)</span>
+          </button>
+          <button className="sidebar-btn" onClick={() => onStatusChange('Exporting IFC4 Model via FreeCAD...')}>
+            <Download size={14}/> <span>Export IFC4</span>
+          </button>
+        </div>
+      </div>
+
       {/* 3D Viewport */}
       <div className="viewport-container"
         ref={mountRef}
@@ -242,6 +316,7 @@ export default function ThreeDTab({ floor, project, onStatusChange }: Props) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onClick={handleClick}
         onWheel={handleWheel}
         style={{ cursor: isDragging.current ? 'grabbing' : 'grab' }}
       >
@@ -298,23 +373,59 @@ export default function ThreeDTab({ floor, project, onStatusChange }: Props) {
 
       {/* Right properties panel */}
       <div className="threed-properties">
-        <div className="panel" style={{ margin: 8 }}>
-          <div className="panel-header"><span>Scene</span></div>
-          <div style={{ padding: 8 }}>
-            <div className="label">Building</div>
-            <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{project.projectName}</div>
-            <div className="label">Floor</div>
-            <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{floor.name}</div>
-            <div className="label">Floor Height</div>
-            <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{(floor.floorHeight / 1000).toFixed(2)} m</div>
-            <div className="label">Entities in Plan</div>
-            <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{floor.entities.length}</div>
-            <div className="label">3D Objects</div>
-            <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
-              {hasModel ? (sceneRef.current?.children.filter(c => c.userData['archflow']).length ?? 0) : 0}
+        {selectedObjectId ? (
+          <div className="panel" style={{ margin: 8 }}>
+            <div className="panel-header"><span>BIM Properties</span></div>
+            <div style={{ padding: 8 }}>
+              <div className="label">Object ID</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8, fontFamily: 'monospace' }}>{selectedObjectId}</div>
+              
+              <div className="label">FreeCAD Class</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>Arch::Wall</div>
+
+              <div className="label">Structural Material</div>
+              <select style={{ width: '100%', marginBottom: 8, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: 4, borderRadius: 4 }}>
+                <option>Concrete C30/37</option>
+                <option>Steel S355</option>
+                <option>Timber C24</option>
+                <option>Masonry Unit</option>
+              </select>
+
+              <div className="label">Fire Rating</div>
+              <select style={{ width: '100%', marginBottom: 8, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: 4, borderRadius: 4 }}>
+                <option>REI 60</option>
+                <option>REI 90</option>
+                <option>REI 120</option>
+                <option>Unrated</option>
+              </select>
+
+              <div className="label">Thermal Transmittance (U)</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>0.28 W/(m²K)</div>
+
+              <button className="btn outline" style={{ width: '100%', marginTop: 8 }} onClick={() => onStatusChange('Opening FreeCAD Property Editor...')}>
+                <Settings2 size={12}/> Advanced Properties
+              </button>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="panel" style={{ margin: 8 }}>
+            <div className="panel-header"><span>Scene</span></div>
+            <div style={{ padding: 8 }}>
+              <div className="label">Building</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{project.projectName}</div>
+              <div className="label">Floor</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{floor.name}</div>
+              <div className="label">Floor Height</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{(floor.floorHeight / 1000).toFixed(2)} m</div>
+              <div className="label">Entities in Plan</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: 8 }}>{floor.entities.length}</div>
+              <div className="label">3D Objects</div>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
+                {hasModel ? (sceneRef.current?.children.filter(c => c.userData['archflow']).length ?? 0) : 0}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Camera presets */}
         <div className="panel" style={{ margin: 8, marginTop: 0 }}>
