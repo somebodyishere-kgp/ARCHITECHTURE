@@ -64,3 +64,63 @@
   display: flex; align-items: center; gap: 6px;
   font-size: 11px; color: var(--text-primary);
 }
+
+/* ─── AutoCAD Style Command Line ───────────────────────────────────────── */
+.autocad-command-line {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  min-width: 400px;
+  max-width: 800px;
+  background: rgba(30,30,30,0.9);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  z-index: 100;
+}
+
+.command-history {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 6px 12px 2px;
+  color: #a1a1aa;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  height: 60px;
+  overflow-y: auto;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.command-input-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: rgba(0,0,0,0.3);
+}
+
+.command-prompt {
+  color: var(--text-primary);
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.command-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #58a6ff;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: 600;
+}

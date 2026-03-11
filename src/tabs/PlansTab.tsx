@@ -11,10 +11,10 @@ import './PlansTab.css';
 
 type Tool =
   'select' | 'pan' |
-  'wall' | 'line' | 'arc' | 'circle' | 'polyline' | 'rectangle' |
-  'door' | 'window' | 'stair' | 'column' |
-  'dimension' | 'text' |
-  'move' | 'copy' | 'rotate' | 'offset' | 'trim' | 'extend' | 'mirror';
+  'wall' | 'line' | 'arc' | 'circle' | 'polyline' | 'rectangle' | 'spline' | 'ellipse' | 'hatch' |
+  'door' | 'window' | 'stair' | 'column' | 'slab' | 'roof' |
+  'dimension' | 'dim_align' | 'dim_rad' | 'text' | 'leader' |
+  'move' | 'copy' | 'rotate' | 'offset' | 'trim' | 'extend' | 'mirror' | 'scale' | 'fillet' | 'array' | 'explode';
 
 interface ToolGroup { label: string; tools: ToolDef[]; }
 interface ToolDef  { id: Tool; icon: React.ReactNode; label: string; shortcut?: string; }
@@ -25,28 +25,43 @@ const TOOL_GROUPS: ToolGroup[] = [
     { id: 'pan',    icon: <Move size={15}/>,          label: 'Pan',    shortcut: 'H' },
   ]},
   { label: 'Draw', tools: [
-    { id: 'wall',      icon: <Square size={15}/>,  label: 'Wall',      shortcut: 'W' },
     { id: 'line',      icon: <Minus size={15}/>,   label: 'Line',      shortcut: 'L' },
-    { id: 'arc',       icon: <RotateCw size={15}/>,label: 'Arc',       shortcut: 'A' },
+    { id: 'polyline',  icon: <Pencil size={15}/>,  label: 'Polyline',  shortcut: 'PL' },
+    { id: 'rectangle', icon: <Square size={15}/>,  label: 'Rectangle', shortcut: 'REC' },
     { id: 'circle',    icon: <Circle size={15}/>,  label: 'Circle',    shortcut: 'C' },
-    { id: 'rectangle', icon: <Square size={15}/>,  label: 'Rectangle', shortcut: 'R' },
-    { id: 'polyline',  icon: <Pencil size={15}/>,  label: 'Polyline',  shortcut: 'P' },
+    { id: 'arc',       icon: <RotateCw size={15}/>,label: 'Arc',       shortcut: 'A' },
+    { id: 'spline',    icon: <Pencil size={15}/>,  label: 'Spline',    shortcut: 'SPL' },
+    { id: 'ellipse',   icon: <Circle size={15} style={{transform:'scaleY(0.7)'}}/>, label: 'Ellipse', shortcut: 'EL' },
+    { id: 'hatch',     icon: <LayersIcon size={15}/>, label: 'Hatch', shortcut: 'H' },
+  ]},
+  { label: 'Modify', tools: [
+    { id: 'move',    icon: <Move size={15}/>,      label: 'Move',     shortcut: 'M' },
+    { id: 'copy',    icon: <Copy size={15}/>,      label: 'Copy',     shortcut: 'CO' },
+    { id: 'rotate',  icon: <RotateCw size={15}/>,  label: 'Rotate',   shortcut: 'RO' },
+    { id: 'mirror',  icon: <span style={{fontSize:10,fontWeight:700}}>MI</span>, label: 'Mirror', shortcut: 'MI' },
+    { id: 'scale',   icon: <Maximize2 size={15}/>, label: 'Scale',    shortcut: 'SC' },
+    { id: 'trim',    icon: <Scissors size={15}/>,  label: 'Trim',     shortcut: 'TR' },
+    { id: 'extend',  icon: <span style={{fontSize:10,fontWeight:700}}>EX</span>, label: 'Extend', shortcut: 'EX' },
+    { id: 'offset',  icon: <span style={{fontSize:10,fontWeight:700}}>O</span>,  label: 'Offset', shortcut: 'O' },
+    { id: 'fillet',  icon: <span style={{fontSize:10,fontWeight:700}}>F</span>,  label: 'Fillet', shortcut: 'F' },
+    { id: 'array',   icon: <span style={{fontSize:10,fontWeight:700}}>AR</span>, label: 'Array',  shortcut: 'AR' },
+    { id: 'explode', icon: <span style={{fontSize:10,fontWeight:700}}>X</span>,  label: 'Explode',shortcut: 'X' },
   ]},
   { label: 'Arch.', tools: [
+    { id: 'wall',   icon: <Square size={15}/>, label: 'Wall',   shortcut: 'W' },
     { id: 'door',   icon: <span style={{fontSize:12,fontWeight:700}}>D</span>, label: 'Door',   shortcut: 'O' },
     { id: 'window', icon: <span style={{fontSize:12,fontWeight:700}}>W</span>, label: 'Window', shortcut: 'I' },
     { id: 'stair',  icon: <span style={{fontSize:10,fontWeight:700}}>ST</span>, label: 'Stair' },
     { id: 'column', icon: <span style={{fontSize:10,fontWeight:700}}>CO</span>, label: 'Column' },
+    { id: 'slab',   icon: <Square size={15} style={{transform:'scaleY(0.2)'}}/>, label: 'Slab/Floor' },
+    { id: 'roof',   icon: <span style={{fontSize:10,fontWeight:700}}>RF</span>, label: 'Roof' },
   ]},
   { label: 'Annot.', tools: [
-    { id: 'dimension', icon: <Ruler size={15}/>, label: 'Dimension', shortcut: 'N' },
+    { id: 'dimension', icon: <Ruler size={15}/>, label: 'Linear Dim', shortcut: 'DLI' },
+    { id: 'dim_align', icon: <Ruler size={15} style={{transform:'rotate(-15deg)'}}/>, label: 'Aligned', shortcut: 'DAL' },
+    { id: 'dim_rad',   icon: <Circle size={15}/>, label: 'Radius', shortcut: 'DRA' },
     { id: 'text',      icon: <Type size={15}/>,  label: 'Text',      shortcut: 'T' },
-  ]},
-  { label: 'Modify', tools: [
-    { id: 'move',   icon: <Move size={15}/>,      label: 'Move',   shortcut: 'M' },
-    { id: 'copy',   icon: <Copy size={15}/>,      label: 'Copy',   shortcut: 'CO' },
-    { id: 'rotate', icon: <RotateCw size={15}/>,  label: 'Rotate', shortcut: 'RO' },
-    { id: 'trim',   icon: <Scissors size={15}/>,  label: 'Trim',   shortcut: 'TR' },
+    { id: 'leader',    icon: <span style={{fontSize:10,fontWeight:700}}>LE</span>, label: 'Leader', shortcut: 'LE' },
   ]},
 ];
 
@@ -80,6 +95,10 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const [wallHeight, setWallHeight]     = useState(3000);
   const [selectedIds, setSelectedIds]   = useState<string[]>([]);
   const [zoom, setZoom]                 = useState(100); // percentage
+  
+  // AutoCAD style command line state
+  const [commandText, setCommandText]   = useState('');
+  const [commandHistory, setCommandHistory] = useState<string[]>(['ArchFlow Command Line initialized. Type a command (e.g. line, l, wall, trim)']);
 
   // Convert screen → world coordinates (mm)
   const screenToWorld = useCallback((sx: number, sy: number, t: Transform): DrawingPoint => {
@@ -520,6 +539,40 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     } catch (err) { onStatusChange(`DXF export error: ${err}`); }
   };
 
+  const handleCommandSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && commandText.trim()) {
+      const cmd = commandText.trim().toLowerCase();
+      setCommandHistory(prev => [...prev.slice(-4), `Command: ${cmd}`]);
+      
+      const toolMap: Record<string, Tool> = {
+        'l': 'line', 'line': 'line',
+        'w': 'wall', 'wall': 'wall',
+        'c': 'circle', 'circle': 'circle',
+        'a': 'arc', 'arc': 'arc',
+        'm': 'move', 'move': 'move',
+        'co': 'copy', 'cp': 'copy', 'copy': 'copy',
+        'ro': 'rotate', 'rotate': 'rotate',
+        'tr': 'trim', 'trim': 'trim',
+        'ex': 'extend', 'extend': 'extend',
+        'o': 'offset', 'offset': 'offset',
+        'rect': 'rectangle', 'rec': 'rectangle', 'rectangle': 'rectangle',
+        'pl': 'polyline', 'polyline': 'polyline',
+        't': 'text', 'text': 'text',
+        'd': 'dimension', 'dim': 'dimension', 'dimension': 'dimension',
+        'door': 'door', 'window': 'window'
+      };
+      
+      if (toolMap[cmd]) {
+        setActiveTool(toolMap[cmd]);
+        setDrawStart(null);
+        setCommandHistory(prev => [...prev.slice(-4), `Switched to tool: ${toolMap[cmd]}`]);
+      } else {
+        setCommandHistory(prev => [...prev.slice(-4), `Unknown command: ${cmd}. Available: line, wall, circle, move, copy, trim, etc.`]);
+      }
+      setCommandText('');
+    }
+  };
+
   return (
     <div className="plans-tab" tabIndex={0} onKeyDown={handleKeyDown} style={{ outline: 'none' }}>
       {/* Left toolbar */}
@@ -610,6 +663,28 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           <select value={activeLayer} onChange={e => setActiveLayer(e.target.value)} style={{ background:'none', border:'none', color:'var(--text-primary)', fontSize:11, cursor:'pointer', padding:0 }}>
             {layers.filter(l=>!l.locked).map(l => <option key={l.name} value={l.name}>{l.name}</option>)}
           </select>
+        </div>
+
+        {/* AutoCAD-style Command Line */}
+        <div className="autocad-command-line">
+          <div className="command-history">
+            {commandHistory.map((line, i) => (
+              <div key={i} className="command-line-text">{line}</div>
+            ))}
+          </div>
+          <div className="command-input-row">
+            <span className="command-prompt">Command:</span>
+            <input 
+              type="text" 
+              className="command-input" 
+              value={commandText}
+              onChange={e => setCommandText(e.target.value)}
+              onKeyDown={handleCommandSubmit}
+              autoComplete="off"
+              spellCheck="false"
+              autoFocus
+            />
+          </div>
         </div>
       </div>
 
