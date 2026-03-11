@@ -1,4 +1,67 @@
 use serde::{Deserialize, Serialize};
+use std::process::{Command, Stdio};
+use std::io::{Write, Read};
+use std::path::PathBuf;
+
+fn get_bridges_dir() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    if cwd.ends_with("src-tauri") {
+        Ok(cwd.parent().unwrap().join("bridges"))
+    } else {
+        Ok(cwd.join("bridges"))
+    }
+}
+
+fn run_bridge(script_name: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let bridges_dir = get_bridges_dir()?;
+    let is_freecad = script_name == "freecad_bridge.py";
+    
+    let (program, args) = if is_freecad {
+        #[cfg(target_os = "windows")]
+        let prog = bridges_dir.join("run_freecad.bat");
+        #[cfg(not(target_os = "windows"))]
+        let prog = PathBuf::from("python3");
+        
+        #[cfg(target_os = "windows")]
+        let args = vec![];
+        #[cfg(not(target_os = "windows"))]
+        let args = vec![bridges_dir.join(script_name).to_string_lossy().to_string()];
+        
+        (prog, args)
+    } else {
+        #[cfg(target_os = "windows")]
+        let prog = PathBuf::from("python");
+        #[cfg(not(target_os = "windows"))]
+        let prog = PathBuf::from("python3");
+        
+        (prog, vec![bridges_dir.join(script_name).to_string_lossy().to_string()])
+    };
+
+    let mut child = Command::new(&program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to start python bridge {:?}: {}", program, e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let input_str = serde_json::to_string(&payload).unwrap();
+        stdin.write_all(input_str.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        stdout.read_to_string(&mut output).map_err(|e| e.to_string())?;
+    }
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("Bridge exited with status {} (Output: {})", status, output));
+    }
+
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse bridge output: {} (Output: {})", e, output))
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct ProjectData {
@@ -29,50 +92,22 @@ pub async fn load_project(path: String) -> Result<serde_json::Value, String> {
     Ok(data)
 }
 
-/// Export the current 2D plan as DXF
+/// Export the current 2D plan as DXF via LibreCAD bridge
 #[tauri::command]
 pub async fn export_dxf(path: String, floor_data: serde_json::Value) -> Result<String, String> {
-    // Build a minimal DXF from ADF floor geometry
-    let entities = match floor_data["entities"].as_array() {
-        Some(arr) => arr.clone(),
-        None => return Err("No entities found".to_string()),
-    };
-
-    let mut dxf_lines: Vec<String> = vec![
-        "0\nSECTION\n2\nHEADER\n0\nENDSEC".to_string(),
-        "0\nSECTION\n2\nENTITIES".to_string(),
-    ];
-
-    for entity in &entities {
-        let etype = entity["type"].as_str().unwrap_or("UNKNOWN");
-        match etype {
-            "wall" | "line" => {
-                let x1 = entity["x1"].as_f64().unwrap_or(0.0);
-                let y1 = entity["y1"].as_f64().unwrap_or(0.0);
-                let x2 = entity["x2"].as_f64().unwrap_or(0.0);
-                let y2 = entity["y2"].as_f64().unwrap_or(0.0);
-                dxf_lines.push(format!(
-                    "0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}",
-                    x1, y1, x2, y2
-                ));
-            }
-            "circle" => {
-                let cx = entity["cx"].as_f64().unwrap_or(0.0);
-                let cy = entity["cy"].as_f64().unwrap_or(0.0);
-                let r = entity["radius"].as_f64().unwrap_or(1.0);
-                dxf_lines.push(format!(
-                    "0\nCIRCLE\n8\n0\n10\n{}\n20\n{}\n40\n{}",
-                    cx, cy, r
-                ));
-            }
-            _ => {}
-        }
+    let payload = serde_json::json!({
+        "action": "export_dxf",
+        "floor_data": floor_data,
+        "output_path": path,
+        "dxf_version": "R2010"
+    });
+    
+    let res = run_bridge("librecad_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(format!("Exported native DXF to {}", path))
+    } else {
+        Err(res["error"].as_str().unwrap_or("Unknown error").to_string())
     }
-
-    dxf_lines.push("0\nENDSEC\n0\nEOF".to_string());
-    let dxf_content = dxf_lines.join("\n");
-    std::fs::write(&path, dxf_content).map_err(|e| e.to_string())?;
-    Ok(format!("Exported DXF to {}", path))
 }
 
 /// Generate a floor plan via AI (calls Python bridge)
@@ -295,7 +330,20 @@ pub async fn get_building_codes(location: String) -> Result<serde_json::Value, S
 /// Convert 2D floor plan to 3D model
 #[tauri::command]
 pub async fn convert_to_3d(floor_data: serde_json::Value) -> Result<serde_json::Value, String> {
-    // Generate a Three.js compatible scene description from 2D floor entities
+    // 1. Call True BIM Engine (FreeCAD) to generate industry-standard IFC model under the hood
+    let ifc_path = get_bridges_dir()?.parent().unwrap().join("building.ifc");
+    let payload = serde_json::json!({
+        "action": "create_ifc",
+        "floor_data": floor_data,
+        "output_path": ifc_path.to_string_lossy().to_string()
+    });
+    
+    // We run it and let FreeCAD do its thing if installed.
+    // If it fails (FreeCAD not found), the app still shows the UI preview below.
+    let _freecad_result = run_bridge("freecad_bridge.py", payload);
+
+    // 2. Generate a Three.js compatible scene description from 2D floor entities for UI preview
+
     let entities = match floor_data["entities"].as_array() {
         Some(arr) => arr.clone(),
         None => return Err("No entities in floor data".to_string()),
