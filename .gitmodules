@@ -1,0 +1,3 @@
+[submodule "librecad-source"]
+	path = librecad-source
+	url = https://github.com/LibreCAD/LibreCAD.git

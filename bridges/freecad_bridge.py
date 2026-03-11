@@ -23,6 +23,7 @@ import traceback
 # ─── FreeCAD path setup ───────────────────────────────────────────────────────
 FREECAD_PATHS = [
     os.environ.get("FREECADPATH", ""),
+    r"C:\Program Files\FreeCAD 1.0\bin",
     r"C:\Program Files\FreeCAD 0.21\bin",
     r"C:\Program Files\FreeCAD 0.20\bin",
     "/usr/lib/freecad/lib",
