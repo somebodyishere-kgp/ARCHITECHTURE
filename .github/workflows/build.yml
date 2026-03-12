@@ -48,7 +48,7 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             artifact: macos-arm64
-          - platform: macos-13
+          - platform: macos-14
             target: x86_64-apple-darwin
             artifact: macos-x64
 
@@ -119,14 +119,36 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release-files
+          find artifacts -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} release-files/ \;
+          ls -la release-files/
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          prerelease: false
           generate_release_notes: true
-          files: artifacts/**/*
+          name: ArchFlow ${{ github.ref_name }}
+          body: |
+            ## ArchFlow Desktop App
+            
+            Download the installer for your platform:
+            - **Windows**: `.msi` (recommended) or `.exe` (NSIS installer)
+            - **macOS Apple Silicon**: `.dmg`
+            - **macOS Intel**: `.dmg`  
+            - **Linux**: `.AppImage` (portable) or `.deb` (Debian/Ubuntu)
+            
+            ### What's included
+            - 280+ CAD/BIM drafting tools
+            - Full 3D modeling with PBR materials and SSAO
+            - Zone/Room entities with fill and hatch patterns
+            - DXF/PDF/IFC export, glTF/IFC import
+            - Parametric dimensions, MEP tools, structural tools
+            - Professional command bar with snap system
+          files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
