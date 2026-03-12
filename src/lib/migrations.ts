@@ -1,15 +1,17 @@
 import {
   ADFProject,
+  ConstraintRuleDefinition,
   DesignBranchGraph,
   FloorPlan,
   ProjectMigrationEntry,
   ProjectPresetLibrary,
   ProjectTimeline,
   createProject,
+  defaultConstraintRules,
   uid,
 } from './adf';
 
-export const CURRENT_PROJECT_SCHEMA = 4;
+export const CURRENT_PROJECT_SCHEMA = 5;
 
 export interface MigrationReport {
   from: number;
@@ -61,8 +63,20 @@ function ensureTimeline(value: unknown): ProjectTimeline {
 function ensureFloorDependencyMetadata(floor: FloorPlan): FloorPlan {
   return {
     ...floor,
-    dependencyMetadata: floor.dependencyMetadata || { recentReports: [] },
+    dependencyMetadata: {
+      recentReports: floor.dependencyMetadata?.recentReports || [],
+      recentConstraintReports: floor.dependencyMetadata?.recentConstraintReports || [],
+      lastReport: floor.dependencyMetadata?.lastReport,
+      lastConstraintReport: floor.dependencyMetadata?.lastConstraintReport,
+    },
   };
+}
+
+function ensureConstraintRules(value: unknown): ConstraintRuleDefinition[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return defaultConstraintRules();
+  }
+  return value as ConstraintRuleDefinition[];
 }
 
 function normalizeBaseProject(raw: unknown): ADFProject {
@@ -90,6 +104,7 @@ function normalizeBaseProject(raw: unknown): ADFProject {
       : [],
     branchGraph: ensureBranchGraph(raw.branchGraph),
     timeline: ensureTimeline(raw.timeline),
+    constraintRules: ensureConstraintRules(raw.constraintRules),
   };
 }
 
@@ -142,12 +157,27 @@ export function migrateProjectData(raw: unknown): { project: ADFProject; report:
       continue;
     }
 
+    if (schemaVersion === 4) {
+      project.constraintRules = ensureConstraintRules(project.constraintRules);
+      project.floors = project.floors.map(ensureFloorDependencyMetadata);
+      const step: ProjectMigrationEntry = {
+        from: 4,
+        to: 5,
+        timestamp: new Date().toISOString(),
+        notes: 'Initialized constraint rule set and floor constraint diagnostics metadata.',
+      };
+      applied.push(step);
+      schemaVersion = 5;
+      continue;
+    }
+
     break;
   }
 
   project.schemaVersion = Math.max(schemaVersion, CURRENT_PROJECT_SCHEMA);
   project.branchGraph = ensureBranchGraph(project.branchGraph);
   project.timeline = ensureTimeline(project.timeline);
+  project.constraintRules = ensureConstraintRules(project.constraintRules);
   project.floors = project.floors.map(ensureFloorDependencyMetadata);
   project.migrationHistory = [...(project.migrationHistory || []), ...applied];
 

@@ -73,6 +73,8 @@ interface Props {
   onStatusChange: (s: string) => void;
   onEntityUpdate?: (entities: AnyEntity[]) => void;
   onPresetLibraryChange?: (library: ProjectPresetLibrary) => void;
+  activeTime?: number;
+  isTimelinePlaying?: boolean;
 }
 
 interface SceneObject {
@@ -208,7 +210,7 @@ const mmToM = 0.001;
 (THREE.BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
 (THREE.Mesh.prototype as any).raycast = acceleratedRaycast;
 
-export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpdate, onPresetLibraryChange }: Props) {
+export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpdate, onPresetLibraryChange, activeTime = 0, isTimelinePlaying = false }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const sceneRef   = useRef<THREE.Scene | null>(null);
   const cameraRef  = useRef<THREE.PerspectiveCamera | null>(null);
@@ -3521,6 +3523,18 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     <div className="threed-tab">
       {/* ─── Left Sidebar: BIM Tools & Categories ─── */}
       <div className="threed-sidebar">
+        <div className="tool-group">
+          <div className="tool-group-label" style={{ textAlign: 'left', paddingLeft: 12 }}>Timeline</div>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '0 12px 6px 12px' }}>
+            <div style={{ marginBottom: 4 }}>T {activeTime.toFixed(1)} d</div>
+            <div style={{ color: isTimelinePlaying ? '#22c55e' : 'var(--text-muted)' }}>
+              {isTimelinePlaying ? 'Playback running' : 'Playback paused'}
+            </div>
+          </div>
+        </div>
+
+        <div className="sidebar-divider"/>
+
         {/* Tool mode */}
         <div className="tool-group">
           <div className="tool-group-label" style={{textAlign:'left',paddingLeft:12}}>Navigate</div>

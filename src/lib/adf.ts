@@ -802,6 +802,51 @@ export interface DependencyPropagationDiagnostics {
 export interface FloorDependencyMetadata {
   lastReport?: DependencyPropagationDiagnostics;
   recentReports: DependencyPropagationDiagnostics[];
+  lastConstraintReport?: ConstraintRuleReport;
+  recentConstraintReports?: ConstraintRuleReport[];
+}
+
+export type ConstraintRuleSeverity = 'info' | 'warning' | 'error';
+
+export type ConstraintRuleKind =
+  | 'dimension_conflict'
+  | 'missing_target'
+  | 'invalid_value'
+  | 'door_width_min'
+  | 'window_sill_min';
+
+export interface ConstraintRuleDefinition {
+  id: string;
+  kind: ConstraintRuleKind;
+  name: string;
+  enabled: boolean;
+  threshold?: number;
+}
+
+export interface ConstraintRuleWarning {
+  code: ConstraintRuleKind;
+  severity: ConstraintRuleSeverity;
+  message: string;
+  entityIds: string[];
+  ruleId?: string;
+}
+
+export interface ConstraintRuleReport {
+  timestamp: string;
+  nodeCount: number;
+  edgeCount: number;
+  warningCount: number;
+  warnings: ConstraintRuleWarning[];
+}
+
+export interface ProjectBranchSnapshot {
+  capturedAt: string;
+  floors: FloorPlan[];
+  sheets: Sheet[];
+  layers: Layer[];
+  blocks: BlockDef[];
+  presetLibrary?: ProjectPresetLibrary;
+  timeline?: ProjectTimeline;
 }
 
 export interface DesignBranchNode {
@@ -810,6 +855,7 @@ export interface DesignBranchNode {
   parentId?: string;
   createdAt: string;
   objective?: string;
+  snapshot?: ProjectBranchSnapshot;
 }
 
 export interface DesignBranchGraph {
@@ -855,8 +901,19 @@ export interface ADFProject {
   migrationHistory?: ProjectMigrationEntry[];
   branchGraph?: DesignBranchGraph;
   timeline?: ProjectTimeline;
+  constraintRules?: ConstraintRuleDefinition[];
   buildingCodes?: Record<string, unknown>;
   generatedFromPrompt?: string;
+}
+
+export function defaultConstraintRules(): ConstraintRuleDefinition[] {
+  return [
+    { id: uid(), kind: 'missing_target', name: 'Missing constrained target', enabled: true },
+    { id: uid(), kind: 'invalid_value', name: 'Invalid driven values', enabled: true },
+    { id: uid(), kind: 'dimension_conflict', name: 'Conflicting dimensions', enabled: true, threshold: 1 },
+    { id: uid(), kind: 'door_width_min', name: 'Door minimum width', enabled: true, threshold: 700 },
+    { id: uid(), kind: 'window_sill_min', name: 'Window minimum sill height', enabled: true, threshold: 450 },
+  ];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -871,7 +928,7 @@ export function createProject(name = 'New Project'): ADFProject {
   const rootBranchId = uid();
   return {
     version: '1.0',
-    schemaVersion: 4,
+    schemaVersion: 5,
     projectName: name,
     location: '',
     buildingType: 'residential',
@@ -892,6 +949,7 @@ export function createProject(name = 'New Project'): ADFProject {
       activeTime: 0,
       tracks: [],
     },
+    constraintRules: defaultConstraintRules(),
   };
 }
 
@@ -903,7 +961,7 @@ export function createFloor(
     name, level, elevation,
     floorHeight: height,
     entities: [],
-    dependencyMetadata: { recentReports: [] },
+    dependencyMetadata: { recentReports: [], recentConstraintReports: [] },
   };
 }
 

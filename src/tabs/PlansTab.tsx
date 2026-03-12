@@ -602,10 +602,12 @@ interface Props {
   onFloorChange: (f: FloorPlan) => void;
   onLayersChange: (l: Layer[]) => void;
   onStatusChange: (s: string) => void;
+  activeTime?: number;
+  isTimelinePlaying?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-export default function PlansTab({ floor, layers, onFloorChange, onLayersChange, onStatusChange }: Props) {
+export default function PlansTab({ floor, layers, onFloorChange, onLayersChange, onStatusChange, activeTime = 0, isTimelinePlaying = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const statusRafRef = useRef<number | null>(null);
   const pendingStatusRef = useRef('');
@@ -6668,6 +6670,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
   const selectedObjects = floor.entities.filter(e => selectedIds.includes(e.id));
   const dependencyReport = floor.dependencyMetadata?.lastReport;
+  const constraintReport = floor.dependencyMetadata?.lastConstraintReport;
 
   const selectTool = useCallback((toolId: Tool) => {
     setActiveTool(toolId);
@@ -7360,6 +7363,47 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
               </>
             ) : (
               <div style={{ color: 'var(--text-muted)' }}>No dependency propagation has run yet.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="right-panel-section">
+          <div className="right-panel-header">
+            <Hash size={12} />
+            <span>Timeline + Constraints</span>
+          </div>
+          <div style={{ padding: 10, fontSize: 10, color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>Active Time</span>
+              <span style={{ color: 'var(--text-primary)' }}>{activeTime.toFixed(1)} d</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span>Playback</span>
+              <span style={{ color: isTimelinePlaying ? '#22c55e' : 'var(--text-muted)' }}>{isTimelinePlaying ? 'Running' : 'Paused'}</span>
+            </div>
+
+            {constraintReport ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>Rule Graph</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{constraintReport.nodeCount}N / {constraintReport.edgeCount}E</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span>Warnings</span>
+                  <span style={{ color: constraintReport.warningCount > 0 ? '#f59e0b' : 'var(--text-primary)' }}>{constraintReport.warningCount}</span>
+                </div>
+                {constraintReport.warnings.length > 0 && (
+                  <div style={{ maxHeight: 72, overflowY: 'auto', display: 'grid', gap: 2 }}>
+                    {constraintReport.warnings.slice(0, 4).map((warning, i) => (
+                      <div key={`${warning.code}-${i}`} style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 3, padding: '2px 4px', color: '#fcd34d' }}>
+                        {warning.code}: {warning.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-muted)' }}>Constraint evaluator has not run yet.</div>
             )}
           </div>
         </div>

@@ -5,6 +5,8 @@ import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-rea
 import { ADFProject, ProjectPresetLibrary, createProject } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { propagateFloorDependencies } from './lib/systemGraph';
+import { compareBranches, createBranchFromActive, ensureGraph, switchToBranch } from './lib/branchGraph';
+import { evaluateConstraintRuleGraph } from './lib/constraintRules';
 import AIChat from './components/AIChat';
 import './App.css';
 
@@ -34,6 +36,8 @@ export default function App() {
   const [showAI, setShowAI] = useState(false);
   const [activeFloorIndex, setActiveFloorIndex] = useState(0);
   const [statusMsg, setStatusMsg] = useState('Ready');
+  const [isTimelinePlaying, setIsTimelinePlaying] = useState(false);
+  const [timelineSpeed, setTimelineSpeed] = useState(1);
 
   const activeFloor = project.floors[activeFloorIndex];
 
@@ -128,6 +132,23 @@ export default function App() {
     setProject(prev => ({ ...updater(prev), modifiedAt: new Date().toISOString() }));
   }, []);
 
+  useEffect(() => {
+    if (!isTimelinePlaying) return;
+    const intervalId = window.setInterval(() => {
+      updateProject(prev => {
+        const currentTimeline = prev.timeline || { activeTime: 0, tracks: [] };
+        return {
+          ...prev,
+          timeline: {
+            ...currentTimeline,
+            activeTime: currentTimeline.activeTime + 0.1 * timelineSpeed,
+          },
+        };
+      });
+    }, 100);
+    return () => window.clearInterval(intervalId);
+  }, [isTimelinePlaying, timelineSpeed, updateProject]);
+
   const handleNewProject = useCallback(() => {
     if (confirm('Create a new project? Unsaved changes will be lost.')) {
       setProject(createProject('Untitled Project'));
@@ -168,6 +189,45 @@ export default function App() {
       setStatusMsg(`Open failed: ${err}`);
     }
   }, []);
+
+  const handleCreateBranch = useCallback(() => {
+    const branchName = prompt('Branch name', `Branch ${Math.max(1, (project.branchGraph?.nodes.length || 1))}`);
+    if (!branchName) return;
+    updateProject(prev => {
+      const result = createBranchFromActive(prev, branchName);
+      return result.project;
+    });
+    setStatusMsg(`Created branch: ${branchName}`);
+  }, [project.branchGraph?.nodes.length, updateProject]);
+
+  const handleSwitchBranch = useCallback((branchId: string) => {
+    try {
+      updateProject(prev => switchToBranch(prev, branchId));
+      const branchName = project.branchGraph?.nodes.find(node => node.id === branchId)?.name || branchId;
+      setStatusMsg(`Switched to branch: ${branchName}`);
+    } catch (err) {
+      setStatusMsg(`Branch switch failed: ${err}`);
+    }
+  }, [project.branchGraph?.nodes, updateProject]);
+
+  const handleCompareActiveBranch = useCallback(() => {
+    const graph = ensureGraph(project);
+    const activeId = graph.activeBranchId;
+    const baseline = graph.nodes.find(node => node.id !== activeId);
+    if (!baseline) {
+      setStatusMsg('Need at least two branches to compare');
+      return;
+    }
+
+    try {
+      const comparison = compareBranches(project, baseline.id, activeId);
+      setStatusMsg(
+        `Branch delta vs ${baseline.name}: ${comparison.totalDelta >= 0 ? '+' : ''}${comparison.totalDelta} entities`
+      );
+    } catch (err) {
+      setStatusMsg(`Branch compare failed: ${err}`);
+    }
+  }, [project]);
 
   const handleExportDXF = async () => {
     try {
@@ -305,10 +365,54 @@ export default function App() {
               floors: [...p.floors, {
                 id: crypto.randomUUID(), name: `Floor ${p.floors.length}`,
                 level: p.floors.length, elevation: p.floors.length * 3000,
-                floorHeight: 3000, entities: [], dependencyMetadata: { recentReports: [] }
+                floorHeight: 3000, entities: [], dependencyMetadata: { recentReports: [], recentConstraintReports: [] }
               }]
             }));
           }}>+</button>
+        </div>
+
+        <div className="branch-controls">
+          <select
+            value={project.branchGraph?.activeBranchId || ''}
+            onChange={e => handleSwitchBranch(e.target.value)}
+            title="Active branch"
+          >
+            {(project.branchGraph?.nodes || []).map(node => (
+              <option key={node.id} value={node.id}>{node.name}</option>
+            ))}
+          </select>
+          <button className="btn ghost" onClick={handleCreateBranch} title="Create branch snapshot">Branch+</button>
+          <button className="btn ghost" onClick={handleCompareActiveBranch} title="Compare active branch">Compare</button>
+        </div>
+
+        <div className="timeline-controls">
+          <button className="btn ghost" onClick={() => setIsTimelinePlaying(v => !v)}>
+            {isTimelinePlaying ? 'Pause' : 'Play'}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={365}
+            step={0.1}
+            value={project.timeline?.activeTime || 0}
+            onChange={e => {
+              const next = Number(e.target.value);
+              updateProject(prev => ({
+                ...prev,
+                timeline: {
+                  ...(prev.timeline || { activeTime: 0, tracks: [] }),
+                  activeTime: next,
+                },
+              }));
+            }}
+          />
+          <select value={timelineSpeed} onChange={e => setTimelineSpeed(Number(e.target.value))}>
+            <option value={0.5}>0.5x</option>
+            <option value={1}>1x</option>
+            <option value={2}>2x</option>
+            <option value={4}>4x</option>
+          </select>
+          <span className="timeline-time">T {Number(project.timeline?.activeTime || 0).toFixed(1)} d</span>
         </div>
       </div>
 
@@ -321,15 +425,21 @@ export default function App() {
               <PlansTab
                 floor={activeFloor}
                 layers={project.layers}
+                activeTime={project.timeline?.activeTime || 0}
+                isTimelinePlaying={isTimelinePlaying}
                 onFloorChange={(updated) => {
                   const prevFloor = project.floors[activeFloorIndex];
                   const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, updated);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0) {
+                  const constraintReport = evaluateConstraintRuleGraph(propagatedFloor, project.constraintRules);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
                     const warn = report.warnings.length > 0 ? ` (${report.warnings.length} warning${report.warnings.length === 1 ? '' : 's'})` : '';
-                    setStatusMsg(`${base}${warn}`);
+                    const constraintWarn = constraintReport.warningCount > 0
+                      ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
+                      : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -346,11 +456,17 @@ export default function App() {
                         warnings: report.warnings,
                       },
                     ].slice(-20);
+                    const recentConstraintReports = [
+                      ...(currentFloor.dependencyMetadata?.recentConstraintReports || []),
+                      constraintReport,
+                    ].slice(-20);
                     floors[activeFloorIndex] = {
                       ...propagatedFloor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
+                        lastConstraintReport: recentConstraintReports[recentConstraintReports.length - 1],
+                        recentConstraintReports,
                       },
                     };
                     return { ...p, floors };
@@ -362,16 +478,22 @@ export default function App() {
             )}
             {activeTab === '3d' && (
               <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
+                activeTime={project.timeline?.activeTime || 0}
+                isTimelinePlaying={isTimelinePlaying}
                 onEntityUpdate={(entities) => {
                   const prevFloor = project.floors[activeFloorIndex];
                   const nextFloor = { ...prevFloor, entities };
                   const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, nextFloor);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0) {
+                  const constraintReport = evaluateConstraintRuleGraph(propagatedFloor, project.constraintRules);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
                     const warn = report.warnings.length > 0 ? ` (${report.warnings.length} warning${report.warnings.length === 1 ? '' : 's'})` : '';
-                    setStatusMsg(`${base}${warn}`);
+                    const constraintWarn = constraintReport.warningCount > 0
+                      ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
+                      : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -388,11 +510,17 @@ export default function App() {
                         warnings: report.warnings,
                       },
                     ].slice(-20);
+                    const recentConstraintReports = [
+                      ...(currentFloor.dependencyMetadata?.recentConstraintReports || []),
+                      constraintReport,
+                    ].slice(-20);
                     floors[activeFloorIndex] = {
                       ...propagatedFloor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
+                        lastConstraintReport: recentConstraintReports[recentConstraintReports.length - 1],
+                        recentConstraintReports,
                       },
                     };
                     return { ...p, floors };
@@ -428,6 +556,8 @@ export default function App() {
           <span>{project.floors[activeFloorIndex]?.entities.length ?? 0} entities</span>
           <span>·</span>
           <span>{project.floors.length} floor{project.floors.length !== 1 ? 's' : ''}</span>
+          <span>·</span>
+          <span>T {Number(project.timeline?.activeTime || 0).toFixed(1)} d</span>
           <span>·</span>
           <span className="badge blue">ADF {project.version}</span>
         </div>
