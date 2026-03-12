@@ -1,5 +1,5 @@
 import React from 'react';
-import { Eye, EyeOff, Lock, Unlock, Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Plus, Trash2, Snowflake } from 'lucide-react';
 import type { Layer } from '@/lib/adf';
 import { defaultLayers } from '@/lib/adf';
 import './LayerManager.css';
@@ -21,7 +21,7 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
 
   const addLayer = () => {
     const name = `Layer ${layers.length + 1}`;
-    onLayersChange([...layers, { name, color: '#aaaaaa', visible: true, locked: false, lineweight: 0.25, linetype: 'continuous' }]);
+    onLayersChange([...layers, { name, color: '#aaaaaa', visible: true, locked: false, frozen: false, lineweight: 0.25, linetype: 'continuous' }]);
   };
 
   const removeLayer = (name: string) => {
@@ -29,6 +29,14 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
     const next = layers.filter(l => l.name !== name);
     onLayersChange(next);
     if (activeLayer === name) onActiveLayerChange(next[0].name);
+  };
+
+  const toggleFreeze = (name: string, layer: Layer) => {
+    if (layer.frozen) {
+      update(name, { frozen: false, visible: true, locked: false });
+    } else {
+      update(name, { frozen: true, visible: false, locked: true });
+    }
   };
 
   return (
@@ -41,17 +49,25 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
       <div className="layers-list">
         {layers.map(layer => (
           <div key={layer.name}
-            className={`layer-row${activeLayer === layer.name ? ' active' : ''}`}
-            onClick={() => !layer.locked && onActiveLayerChange(layer.name)}>
+            className={`layer-row${activeLayer === layer.name ? ' active' : ''}${layer.frozen ? ' frozen' : ''}`}
+            onClick={() => !layer.locked && !layer.frozen && onActiveLayerChange(layer.name)}>
 
             {/* Visibility */}
-            <button className="layer-icon-btn" onClick={e => { e.stopPropagation(); update(layer.name, { visible: !layer.visible }); }}>
+            <button className="layer-icon-btn" onClick={e => { e.stopPropagation(); if (!layer.frozen) update(layer.name, { visible: !layer.visible }); }}
+              title={layer.visible ? 'Hide' : 'Show'}>
               {layer.visible ? <Eye size={11}/> : <EyeOff size={11} style={{ opacity:0.4 }}/>}
             </button>
 
             {/* Lock */}
-            <button className="layer-icon-btn" onClick={e => { e.stopPropagation(); update(layer.name, { locked: !layer.locked }); }}>
+            <button className="layer-icon-btn" onClick={e => { e.stopPropagation(); if (!layer.frozen) update(layer.name, { locked: !layer.locked }); }}
+              title={layer.locked ? 'Unlock' : 'Lock'}>
               {layer.locked ? <Lock size={10} style={{ color:'var(--amber)' }}/> : <Unlock size={10}/>}
+            </button>
+
+            {/* Freeze */}
+            <button className="layer-icon-btn" onClick={e => { e.stopPropagation(); toggleFreeze(layer.name, layer); }}
+              title={layer.frozen ? 'Thaw' : 'Freeze'}>
+              <Snowflake size={10} style={{ color: layer.frozen ? '#58a6ff' : 'var(--text-muted)', opacity: layer.frozen ? 1 : 0.3 }}/>
             </button>
 
             {/* Color */}
@@ -68,10 +84,19 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
             {/* Name */}
             <span className="layer-name" style={{ opacity: layer.visible ? 1 : 0.4 }}>{layer.name}</span>
 
-            {/* Lineweight. */}
+            {/* Linetype */}
+            <select className="layer-lt" value={layer.linetype ?? 'continuous'}
+              onChange={e => { e.stopPropagation(); update(layer.name, { linetype: e.target.value as Layer['linetype'] }); }}
+              onClick={e => e.stopPropagation()}
+              title="Linetype">
+              {LINETYPES.map(lt => <option key={lt} value={lt}>{lt}</option>)}
+            </select>
+
+            {/* Lineweight */}
             <select className="layer-lw" value={layer.lineweight ?? 0.25}
               onChange={e => { e.stopPropagation(); update(layer.name, { lineweight: Number(e.target.value) }); }}
-              onClick={e => e.stopPropagation()}>
+              onClick={e => e.stopPropagation()}
+              title="Lineweight">
               {LINEWEIGHTS.map(w => <option key={w} value={w}>{w}</option>)}
             </select>
 
@@ -85,7 +110,7 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
         ))}
       </div>
 
-      {/* Linetype legend */}
+      {/* Footer */}
       <div className="layer-manager-footer">
         <span className="label">Active: {activeLayer}</span>
       </div>

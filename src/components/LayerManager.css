@@ -38,6 +38,14 @@
   color: var(--text-secondary); border-radius: 3px;
   flex-shrink: 0;
 }
+.layer-lt {
+  width: 68px; padding: 2px 2px; font-size: 10px;
+  background: var(--bg-base); border: 1px solid var(--border);
+  color: var(--text-secondary); border-radius: 3px;
+  flex-shrink: 0;
+}
+.layer-row.frozen { opacity: 0.5; }
+.layer-row.frozen .layer-name { font-style: italic; }
 .layer-manager-footer {
   padding: 6px 10px;
   border-top: 1px solid var(--border);

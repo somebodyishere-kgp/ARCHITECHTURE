@@ -52,6 +52,8 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import LayerManager from '../components/LayerManager';
 import BimPanel from '../components/BimPanel';
+import AssetLibrary from '../components/AssetLibrary';
+import { PLANS_SINGLE_KEY_SHORTCUTS } from '../lib/keybindings';
 import './PlansTab.css';
 
 // ─── Tool definitions ────────────────────────────────────────────────────────
@@ -175,7 +177,7 @@ type Tool =
   | 'elec_circuit' | 'elec_wire' | 'elec_junction'
   // Plumbing
   | 'plumb_fixture' | 'plumb_pipe' | 'plumb_valve' | 'plumb_drain'
-  | 'plumb_water_heater' | 'plumb_cleanout'
+    | 'plumb_water_heater' | 'plumb_cleanout'
   // HVAC
   | 'hvac_diffuser' | 'hvac_return' | 'hvac_thermostat' | 'hvac_unit'
   | 'hvac_flex_duct' | 'hvac_damper'
@@ -189,6 +191,47 @@ interface ToolDef { id: Tool; icon: React.ReactNode; label: string; shortcut?: s
 interface ToolGroup { label: string; tools: ToolDef[]; }
 
 const ico = (t: string) => <span style={{ fontSize: 10, fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>{t}</span>;
+
+const DOOR_PRESETS = {
+  single: { width: 900, height: 2100, doorType: 'single' as const, openDirection: 'left' as const },
+  double: { width: 1800, height: 2100, doorType: 'double' as const, openDirection: 'left' as const },
+  sliding: { width: 2400, height: 2100, doorType: 'sliding' as const, openDirection: 'left' as const },
+};
+
+const WINDOW_PRESETS = {
+  fixed: { width: 1200, height: 1200, sillHeight: 900, windowType: 'fixed' as const },
+  casement: { width: 1500, height: 1200, sillHeight: 900, windowType: 'casement' as const },
+  sliding: { width: 1800, height: 1200, sillHeight: 900, windowType: 'sliding' as const },
+  awning: { width: 900, height: 600, sillHeight: 1800, windowType: 'awning' as const },
+};
+
+const FURNITURE_PRESETS: Record<string, { width: number; depth: number; name: string }> = {
+  chair: { width: 500, depth: 500, name: 'Dining Chair' },
+  desk: { width: 1400, depth: 700, name: 'Work Desk' },
+  table: { width: 1800, depth: 900, name: 'Dining Table' },
+  sofa: { width: 2200, depth: 900, name: '3-Seat Sofa' },
+  bed: { width: 2000, depth: 1600, name: 'Queen Bed' },
+  cabinet: { width: 1200, depth: 450, name: 'Storage Cabinet' },
+  shelf: { width: 900, depth: 350, name: 'Bookshelf' },
+};
+
+const APPLIANCE_PRESETS: Record<string, { width: number; depth: number; name: string }> = {
+  oven: { width: 600, depth: 600, name: 'Built-in Oven' },
+  fridge: { width: 900, depth: 700, name: 'Refrigerator' },
+  washer: { width: 650, depth: 650, name: 'Washer' },
+  dryer: { width: 650, depth: 650, name: 'Dryer' },
+  dishwasher: { width: 600, depth: 600, name: 'Dishwasher' },
+  microwave: { width: 550, depth: 400, name: 'Microwave' },
+};
+
+const FIXTURE_PRESETS: Record<string, { width: number; depth: number; name: string }> = {
+  sink: { width: 600, depth: 500, name: 'Sink' },
+  toilet: { width: 400, depth: 700, name: 'Toilet' },
+  bathtub: { width: 1700, depth: 750, name: 'Bathtub' },
+  shower: { width: 900, depth: 900, name: 'Shower' },
+  vanity: { width: 900, depth: 550, name: 'Vanity' },
+  bidet: { width: 350, depth: 600, name: 'Bidet' },
+};
 
 const TOOL_GROUPS: ToolGroup[] = [
   { label: 'Select', tools: [
@@ -564,6 +607,9 @@ interface Props {
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function PlansTab({ floor, layers, onFloorChange, onLayersChange, onStatusChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const statusRafRef = useRef<number | null>(null);
+  const pendingStatusRef = useRef('');
+  const lastStatusRef = useRef('');
 
   // ── Core state ──────────────────────────────────────────────────────────
   const [activeTool, setActiveTool]   = useState<Tool>('select');
@@ -575,6 +621,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const [panStart, setPanStart]       = useState<{ mx: number; my: number; tx: number; ty: number } | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showLayers, setShowLayers]   = useState(true);
+  const [showAssetLib, setShowAssetLib] = useState(false);
   const [snapIndicator, setSnapIndicator] = useState<{ pt: Vec2; kind: string } | null>(null);
 
   // Drafting aids
@@ -617,6 +664,12 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   // Selection box
   const [selBox, setSelBox] = useState<{ start: Vec2; end: Vec2 } | null>(null);
 
+  // Previous selection (for select_previous)
+  const [previousSelection, setPreviousSelection] = useState<string[]>([]);
+
+  // Pre-isolation layer visibility snapshot (for unisolate restore)
+  const [preIsolateSnapshot, setPreIsolateSnapshot] = useState<Record<string, boolean> | null>(null);
+
   // Transform state (Move/Copy/Rotate/Scale/Mirror)
   const [xformState, setXformState] = useState<{
     basepoint: Vec2; current: Vec2; step: 'base' | 'target';
@@ -646,6 +699,11 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const [constructionMode, setConstructionMode] = useState(false);
   const [doorWidth, setDoorWidth]             = useState(900);
   const [windowWidth, setWindowWidth]         = useState(1200);
+  const [doorPreset, setDoorPreset]           = useState<keyof typeof DOOR_PRESETS>('single');
+  const [windowPreset, setWindowPreset]       = useState<keyof typeof WINDOW_PRESETS>('fixed');
+  const [furniturePreset, setFurniturePreset] = useState<keyof typeof FURNITURE_PRESETS>('chair');
+  const [appliancePreset, setAppliancePreset] = useState<keyof typeof APPLIANCE_PRESETS>('oven');
+  const [fixturePreset, setFixturePreset]     = useState<keyof typeof FIXTURE_PRESETS>('sink');
   const [columnSize, setColumnSize]           = useState(300);
   const [stairWidth, setStairWidth]           = useState(1200);
   const [pipeSize, setPipeSize]               = useState(100);
@@ -680,6 +738,123 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     y: wy / MM_PER_PX * t.scale + t.y,
   }), []);
 
+  const getLayerState = useCallback((layerName: string) => (
+    layers.find(layer => layer.name === layerName) ?? null
+  ), [layers]);
+
+  const isLayerVisibleForCanvas = useCallback((layerName: string) => {
+    const layer = getLayerState(layerName);
+    return !layer || (layer.visible && !layer.frozen);
+  }, [getLayerState]);
+
+  const isLayerSelectable = useCallback((layerName: string) => {
+    const layer = getLayerState(layerName);
+    return !layer || (layer.visible && !layer.locked && !layer.frozen);
+  }, [getLayerState]);
+
+  const isEntityVisibleOnCanvas = useCallback((entity: AnyEntity) => (
+    entity.visible !== false && isLayerVisibleForCanvas(entity.layer)
+  ), [isLayerVisibleForCanvas]);
+
+  const isEntitySelectable = useCallback((entity: AnyEntity) => (
+    entity.visible !== false && isLayerSelectable(entity.layer)
+  ), [isLayerSelectable]);
+
+  const pickEditableLayer = useCallback((excludedLayer?: string) => {
+    const strict = layers.find(layer =>
+      layer.name !== excludedLayer && layer.visible && !layer.locked && !layer.frozen,
+    );
+    if (strict) return strict.name;
+
+    const visibleUnfrozen = layers.find(layer =>
+      layer.name !== excludedLayer && layer.visible && !layer.frozen,
+    );
+    if (visibleUnfrozen) return visibleUnfrozen.name;
+
+    const anyLayer = layers.find(layer => layer.name !== excludedLayer) ?? layers[0];
+    return anyLayer?.name ?? '0';
+  }, [layers]);
+
+  const transformBlockPoint = useCallback((pt: Vec2, ref: BlockRefEntity, basePoint: Vec2): Vec2 => {
+    const local = {
+      x: (pt.x - basePoint.x) * (ref.scaleX ?? 1),
+      y: (pt.y - basePoint.y) * (ref.scaleY ?? 1),
+    };
+    const rotated = rotatePoint(local, ref.rotation ?? 0);
+    return { x: ref.x + rotated.x, y: ref.y + rotated.y };
+  }, []);
+
+  const getEntitySelectionVertices = useCallback((entity: AnyEntity): Vec2[] => {
+    if (entity.type !== 'block_ref') return entityVertices(entity);
+
+    const ref = entity as BlockRefEntity;
+    const block = blocks.find(def => def.name === ref.blockName);
+    if (!block) return [{ x: ref.x, y: ref.y }];
+
+    return block.entities.flatMap(child => entityVertices(child).map(vertex => (
+      transformBlockPoint(vertex, ref, block.basePoint)
+    )));
+  }, [blocks, transformBlockPoint]);
+
+  const instantiateBlockReference = useCallback((block: BlockDef, ref: BlockRefEntity): AnyEntity[] => {
+    const scaleX = ref.scaleX ?? 1;
+    const scaleY = ref.scaleY ?? 1;
+    const uniformScale = Math.max(0.001, (Math.abs(scaleX) + Math.abs(scaleY)) / 2);
+
+    return block.entities.map(entity => {
+      const clone = JSON.parse(JSON.stringify(entity)) as AnyEntity;
+      const numericClone = clone as unknown as Record<string, number>;
+
+      const applyPoint = (xKey: string, yKey: string) => {
+        if (!(xKey in clone) || !(yKey in clone)) return;
+        const point = transformBlockPoint(
+          { x: numericClone[xKey], y: numericClone[yKey] },
+          ref,
+          block.basePoint,
+        );
+        numericClone[xKey] = point.x;
+        numericClone[yKey] = point.y;
+      };
+
+      applyPoint('x1', 'y1');
+      applyPoint('x2', 'y2');
+      applyPoint('cx', 'cy');
+      if ('x' in clone && 'y' in clone) applyPoint('x', 'y');
+
+      if ('points' in clone && Array.isArray(clone.points)) {
+        clone.points = clone.points.map(point => transformBlockPoint(point, ref, block.basePoint));
+      }
+      if ('boundary' in clone && Array.isArray(clone.boundary)) {
+        clone.boundary = clone.boundary.map(point => transformBlockPoint(point, ref, block.basePoint));
+      }
+      if ('controlPoints' in clone && Array.isArray(clone.controlPoints)) {
+        clone.controlPoints = clone.controlPoints.map(point => transformBlockPoint(point, ref, block.basePoint));
+      }
+      if ('leaders' in clone && Array.isArray(clone.leaders)) {
+        clone.leaders = clone.leaders.map((leader: Vec2[]) => leader.map(point => transformBlockPoint(point, ref, block.basePoint)));
+      }
+      if ('leaderPoints' in clone && Array.isArray(clone.leaderPoints)) {
+        clone.leaderPoints = clone.leaderPoints.map((point: Vec2) => transformBlockPoint(point, ref, block.basePoint));
+      }
+
+      if ('radius' in clone && typeof clone.radius === 'number') clone.radius *= uniformScale;
+      if ('width' in clone && typeof clone.width === 'number') clone.width *= Math.abs(scaleX);
+      if ('height' in clone && typeof clone.height === 'number') clone.height *= Math.abs(scaleY);
+      if ('depth' in clone && typeof clone.depth === 'number') clone.depth *= Math.abs(scaleY);
+      if ('thickness' in clone && typeof clone.thickness === 'number') clone.thickness *= uniformScale;
+      if ('lineweight' in clone && typeof clone.lineweight === 'number') clone.lineweight *= uniformScale;
+      if ('rotation' in clone && typeof clone.rotation === 'number') clone.rotation += ref.rotation ?? 0;
+
+      clone.id = uid();
+      return clone;
+    });
+  }, [transformBlockPoint]);
+
+  useEffect(() => {
+    if (layers.some(layer => layer.name === activeLayer)) return;
+    setActiveLayer(pickEditableLayer());
+  }, [layers, activeLayer, pickEditableLayer]);
+
   // ── Line-line intersection helper ───────────────────────────────────────
   const lineLineIntersect = useCallback((a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): Vec2 | null => {
     const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
@@ -694,6 +869,27 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     return null;
   }, []);
 
+  const queueStatus = useCallback((nextStatus: string) => {
+    pendingStatusRef.current = nextStatus;
+    if (statusRafRef.current !== null) return;
+
+    statusRafRef.current = window.requestAnimationFrame(() => {
+      statusRafRef.current = null;
+      if (pendingStatusRef.current && pendingStatusRef.current !== lastStatusRef.current) {
+        lastStatusRef.current = pendingStatusRef.current;
+        onStatusChange(pendingStatusRef.current);
+      }
+    });
+  }, [onStatusChange]);
+
+  useEffect(() => {
+    return () => {
+      if (statusRafRef.current !== null) {
+        window.cancelAnimationFrame(statusRafRef.current);
+      }
+    };
+  }, []);
+
   // ── Snap engine ─────────────────────────────────────────────────────────
   const snap = useCallback((raw: Vec2): { pt: Vec2; kind: string } => {
     const thresholdMm = SNAP_THRESHOLD_PX * MM_PER_PX / transform.scale;
@@ -701,9 +897,8 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
     if (endpointSnapOn) {
       for (const e of floor.entities) {
-        const layer = layers.find(l => l.name === e.layer);
-        if (layer && (!layer.visible || layer.locked)) continue;
-        for (const v of entityVertices(e)) {
+        if (!isEntitySelectable(e)) continue;
+        for (const v of getEntitySelectionVertices(e)) {
           const d = dist(raw, v);
           if (d < thresholdMm && d < bestDist) {
             best = v; bestDist = d; bestKind = 'Endpoint';
@@ -714,8 +909,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
     if (midpointSnapOn) {
       for (const e of floor.entities) {
-        const layer = layers.find(l => l.name === e.layer);
-        if (layer && (!layer.visible || layer.locked)) continue;
+        if (!isEntitySelectable(e)) continue;
         if (e.type === 'line' || e.type === 'wall') {
           const l = e as LineEntity;
           const m = midpoint({ x: l.x1, y: l.y1 }, { x: l.x2, y: l.y2 });
@@ -730,8 +924,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     // Center snap for circles / arcs / ellipses
     if (centerSnapOn) {
       for (const e of floor.entities) {
-        const layer = layers.find(l => l.name === e.layer);
-        if (layer && (!layer.visible || layer.locked)) continue;
+        if (!isEntitySelectable(e)) continue;
         if (e.type === 'circle' || e.type === 'arc') {
           const c = e as CircleEntity;
           const d = dist(raw, { x: c.cx, y: c.cy });
@@ -752,8 +945,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     if (intersectSnapOn) {
       const segs: { a: Vec2; b: Vec2 }[] = [];
       for (const e of floor.entities) {
-        const layer = layers.find(l => l.name === e.layer);
-        if (layer && (!layer.visible || layer.locked)) continue;
+        if (!isEntitySelectable(e)) continue;
         if (e.type === 'line' || e.type === 'wall' || e.type === 'beam' || e.type === 'curtainwall') {
           const l = e as LineEntity;
           segs.push({ a: { x: l.x1, y: l.y1 }, b: { x: l.x2, y: l.y2 } });
@@ -780,8 +972,8 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     }
 
     return { pt: best, kind: bestKind };
-  }, [floor.entities, layers, transform.scale, gridSnapOn, endpointSnapOn, midpointSnapOn,
-      intersectSnapOn, centerSnapOn]);
+    }, [floor.entities, transform.scale, gridSnapOn, endpointSnapOn, midpointSnapOn,
+      intersectSnapOn, centerSnapOn, getEntitySelectionVertices, isEntitySelectable]);
 
   // ── Ortho constraint ────────────────────────────────────────────────────
   const applyOrtho = useCallback((from: Vec2, to: Vec2): Vec2 => {
@@ -885,9 +1077,8 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
     // ── ENTITY RENDERER ──────────────────────────────────────────────────
     for (const entity of floor.entities) {
-      if (entity.visible === false) continue;
-      const layer = layers.find(l => l.name === entity.layer);
-      if (layer && !layer.visible) continue;
+      if (!isEntityVisibleOnCanvas(entity)) continue;
+      const layer = getLayerState(entity.layer);
 
       const isSel = selectedIds.includes(entity.id);
       const color = isSel ? '#58a6ff' : (entity.color || layer?.color || '#e6edf3');
@@ -1256,35 +1447,100 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           const off = dm.offset * ppm;
           const dLen = Math.hypot(dx2 - dx1, dy2 - dy1);
           if (dLen < 0.5) break;
-          const dnx = -(dy2 - dy1) / dLen, dny = (dx2 - dx1) / dLen;
-          // Extension lines
-          ctx.strokeStyle = color; ctx.lineWidth = 0.5;
-          ctx.beginPath(); ctx.moveTo(dx1, dy1); ctx.lineTo(dx1 + dnx * off, dy1 + dny * off); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(dx2, dy2); ctx.lineTo(dx2 + dnx * off, dy2 + dny * off); ctx.stroke();
-          // Dimension line
-          const ox1 = dx1 + dnx * off, oy1 = dy1 + dny * off;
-          const ox2 = dx2 + dnx * off, oy2 = dy2 + dny * off;
-          ctx.beginPath(); ctx.moveTo(ox1, oy1); ctx.lineTo(ox2, oy2); ctx.stroke();
-          // Arrows
-          const arrowLen = 8;
-          const adx = (ox2 - ox1) / dLen, ady = (oy2 - oy1) / dLen;
-          ctx.fillStyle = color;
-          ctx.beginPath(); ctx.moveTo(ox1, oy1); ctx.lineTo(ox1 + adx * arrowLen - ady * 3, oy1 + ady * arrowLen + adx * 3); ctx.lineTo(ox1 + adx * arrowLen + ady * 3, oy1 + ady * arrowLen - adx * 3); ctx.fill();
-          ctx.beginPath(); ctx.moveTo(ox2, oy2); ctx.lineTo(ox2 - adx * arrowLen + ady * 3, oy2 - ady * arrowLen - adx * 3); ctx.lineTo(ox2 - adx * arrowLen - ady * 3, oy2 - ady * arrowLen + adx * 3); ctx.fill();
-          // Text
-          const realDist = dist({ x: dm.x1, y: dm.y1 }, { x: dm.x2, y: dm.y2 });
+          const dimKind = (dm as any).dimKind || 'linear';
           const precision = dm.precision ?? 0;
-          const dimText = dm.textOverride || `${(realDist / 1000).toFixed(precision)} m`;
-          ctx.fillStyle = color;
-          ctx.font = `11px JetBrains Mono, monospace`;
-          ctx.textAlign = 'center';
-          ctx.save();
-          ctx.translate((ox1 + ox2) / 2, (oy1 + oy2) / 2);
-          const textAngle = Math.atan2(oy2 - oy1, ox2 - ox1);
-          ctx.rotate(textAngle);
-          ctx.fillText(dimText, 0, -4);
-          ctx.restore();
-          ctx.textAlign = 'start';
+
+          if (dimKind === 'angular') {
+            // Angular dimension: draw arc between two lines
+            const x3 = ((dm as any).x3 || dm.x1) * ppm, y3 = ((dm as any).y3 || dm.y1) * ppm;
+            const angle1 = Math.atan2(dy1 - y3, dx1 - x3);
+            const angle2 = Math.atan2(dy2 - y3, dx2 - x3);
+            const r = Math.min(dLen * 0.6, Math.abs(off) || 80);
+            ctx.strokeStyle = color; ctx.lineWidth = 0.5;
+            // Extension lines (short stubs from vertex)
+            ctx.beginPath(); ctx.moveTo(x3, y3); ctx.lineTo(x3 + Math.cos(angle1) * (r + 15), y3 + Math.sin(angle1) * (r + 15)); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x3, y3); ctx.lineTo(x3 + Math.cos(angle2) * (r + 15), y3 + Math.sin(angle2) * (r + 15)); ctx.stroke();
+            // Arc
+            ctx.beginPath(); ctx.arc(x3, y3, r, angle1, angle2); ctx.stroke();
+            // Angle text
+            let ang = ((angle2 - angle1) * 180 / Math.PI + 360) % 360;
+            if (ang > 180) ang = 360 - ang;
+            const midAngle = (angle1 + angle2) / 2;
+            ctx.fillStyle = color; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+            ctx.fillText(`${ang.toFixed(precision)}°`, x3 + Math.cos(midAngle) * (r + 12), y3 + Math.sin(midAngle) * (r + 12));
+            ctx.textAlign = 'start';
+          } else if (dimKind === 'radius' || dimKind === 'diameter') {
+            // Radius/Diameter: single line from center with R/⌀ prefix
+            const dnx = -(dy2 - dy1) / dLen, dny = (dx2 - dx1) / dLen;
+            ctx.strokeStyle = color; ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.moveTo(dx1, dy1); ctx.lineTo(dx2, dy2); ctx.stroke();
+            // Arrow at endpoint
+            const arrowLen = 8;
+            const adx = (dx2 - dx1) / dLen, ady = (dy2 - dy1) / dLen;
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.moveTo(dx2, dy2);
+            ctx.lineTo(dx2 - adx * arrowLen + ady * 3, dy2 - ady * arrowLen - adx * 3);
+            ctx.lineTo(dx2 - adx * arrowLen - ady * 3, dy2 - ady * arrowLen + adx * 3); ctx.fill();
+            // Text with prefix
+            const realDist = dist({ x: dm.x1, y: dm.y1 }, { x: dm.x2, y: dm.y2 });
+            const prefix = dimKind === 'radius' ? 'R' : '\u2300';
+            const dimText = dm.textOverride || `${prefix}${(realDist / 1000).toFixed(precision)} m`;
+            ctx.fillStyle = color; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+            ctx.save();
+            ctx.translate((dx1 + dx2) / 2, (dy1 + dy2) / 2);
+            ctx.rotate(Math.atan2(dy2 - dy1, dx2 - dx1));
+            ctx.fillText(dimText, 0, -6);
+            ctx.restore(); ctx.textAlign = 'start';
+          } else if (dimKind === 'ordinate') {
+            // Ordinate dimension: single leader line with coordinate value
+            ctx.strokeStyle = color; ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.moveTo(dx1, dy1); ctx.lineTo(dx2, dy2); ctx.stroke();
+            const realVal = Math.abs(dm.x1 - dm.x2) > Math.abs(dm.y1 - dm.y2) ? dm.x1 : dm.y1;
+            const dimText = dm.textOverride || `${(realVal / 1000).toFixed(precision)} m`;
+            ctx.fillStyle = color; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+            ctx.fillText(dimText, dx2, dy2 - 6);
+            ctx.textAlign = 'start';
+          } else {
+            // Linear / Aligned / Arc Length / Baseline / Continue
+            const dnx = -(dy2 - dy1) / dLen, dny = (dx2 - dx1) / dLen;
+            // Extension lines
+            ctx.strokeStyle = color; ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.moveTo(dx1, dy1); ctx.lineTo(dx1 + dnx * off, dy1 + dny * off); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(dx2, dy2); ctx.lineTo(dx2 + dnx * off, dy2 + dny * off); ctx.stroke();
+            // Dimension line
+            const ox1 = dx1 + dnx * off, oy1 = dy1 + dny * off;
+            const ox2 = dx2 + dnx * off, oy2 = dy2 + dny * off;
+            if (dimKind === 'arc_length') {
+              // Draw as a curved line (approximation with a slight arc)
+              ctx.beginPath();
+              const midXo = (ox1 + ox2) / 2, midYo = (oy1 + oy2) / 2;
+              const arcH = dLen * 0.05;
+              ctx.moveTo(ox1, oy1);
+              ctx.quadraticCurveTo(midXo + dnx * arcH, midYo + dny * arcH, ox2, oy2);
+              ctx.stroke();
+            } else {
+              ctx.beginPath(); ctx.moveTo(ox1, oy1); ctx.lineTo(ox2, oy2); ctx.stroke();
+            }
+            // Arrows
+            const arrowLen = 8;
+            const adx = (ox2 - ox1) / dLen, ady = (oy2 - oy1) / dLen;
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.moveTo(ox1, oy1); ctx.lineTo(ox1 + adx * arrowLen - ady * 3, oy1 + ady * arrowLen + adx * 3); ctx.lineTo(ox1 + adx * arrowLen + ady * 3, oy1 + ady * arrowLen - adx * 3); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(ox2, oy2); ctx.lineTo(ox2 - adx * arrowLen + ady * 3, oy2 - ady * arrowLen - adx * 3); ctx.lineTo(ox2 - adx * arrowLen - ady * 3, oy2 - ady * arrowLen + adx * 3); ctx.fill();
+            // Text
+            const realDist = dist({ x: dm.x1, y: dm.y1 }, { x: dm.x2, y: dm.y2 });
+            const dimText = dm.textOverride || `${(realDist / 1000).toFixed(precision)} m`;
+            ctx.fillStyle = color;
+            ctx.font = `11px JetBrains Mono, monospace`;
+            ctx.textAlign = 'center';
+            ctx.save();
+            ctx.translate((ox1 + ox2) / 2, (oy1 + oy2) / 2);
+            const textAngle = Math.atan2(oy2 - oy1, ox2 - ox1);
+            ctx.rotate(textAngle);
+            ctx.fillText(dimText, 0, -4);
+            ctx.restore();
+            ctx.textAlign = 'start';
+          }
           break;
         }
         case 'leader': {
@@ -1518,11 +1774,51 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           ctx.translate(br.x * ppm, br.y * ppm);
           ctx.rotate(br.rotation || 0);
           ctx.scale(br.scaleX, br.scaleY);
-          // Draw block reference marker
-          ctx.strokeStyle = color; ctx.lineWidth = 1;
-          ctx.strokeRect(-10, -10, 20, 20);
-          ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(10, 10); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(10, -10); ctx.lineTo(-10, 10); ctx.stroke();
+          // Try to expand block geometry from the blocks array
+          const blockDef = blocks.find(b => b.name === br.blockName);
+          if (blockDef && blockDef.entities.length > 0) {
+            // Render each entity in the block relative to the block's basePoint
+            const bpx = blockDef.basePoint.x, bpy = blockDef.basePoint.y;
+            for (const be of blockDef.entities) {
+              const verts = entityVertices(be);
+              if (be.type === 'line') {
+                const bl = be as LineEntity;
+                ctx.beginPath();
+                ctx.moveTo((bl.x1 - bpx) * ppm, (bl.y1 - bpy) * ppm);
+                ctx.lineTo((bl.x2 - bpx) * ppm, (bl.y2 - bpy) * ppm);
+                ctx.stroke();
+              } else if (be.type === 'circle') {
+                const bc = be as CircleEntity;
+                ctx.beginPath(); ctx.arc((bc.cx - bpx) * ppm, (bc.cy - bpy) * ppm, bc.radius * ppm, 0, Math.PI * 2); ctx.stroke();
+              } else if (be.type === 'rectangle') {
+                const br2 = be as RectangleEntity;
+                ctx.strokeRect((br2.x1 - bpx) * ppm, (br2.y1 - bpy) * ppm, (br2.x2 - br2.x1) * ppm, (br2.y2 - br2.y1) * ppm);
+              } else if (be.type === 'polyline') {
+                const bp = be as PolylineEntity;
+                if (bp.points.length > 1) {
+                  ctx.beginPath();
+                  ctx.moveTo((bp.points[0].x - bpx) * ppm, (bp.points[0].y - bpy) * ppm);
+                  for (let pi = 1; pi < bp.points.length; pi++) ctx.lineTo((bp.points[pi].x - bpx) * ppm, (bp.points[pi].y - bpy) * ppm);
+                  if (bp.closed) ctx.closePath();
+                  ctx.stroke();
+                }
+              } else if (be.type === 'arc') {
+                const ba = be as ArcEntity;
+                ctx.beginPath(); ctx.arc((ba.cx - bpx) * ppm, (ba.cy - bpy) * ppm, ba.radius * ppm, ba.startAngle, ba.endAngle); ctx.stroke();
+              } else if (verts.length > 0) {
+                // Fallback: draw vertices as dots
+                for (const v of verts) {
+                  ctx.beginPath(); ctx.arc((v.x - bpx) * ppm, (v.y - bpy) * ppm, 2, 0, Math.PI * 2); ctx.fill();
+                }
+              }
+            }
+          } else {
+            // Fallback: block reference marker (X in square)
+            ctx.strokeStyle = color; ctx.lineWidth = 1;
+            ctx.strokeRect(-10, -10, 20, 20);
+            ctx.beginPath(); ctx.moveTo(-10, -10); ctx.lineTo(10, 10); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(10, -10); ctx.lineTo(-10, 10); ctx.stroke();
+          }
           ctx.fillStyle = color; ctx.font = '8px JetBrains Mono';
           ctx.fillText(br.blockName, 14, 4);
           ctx.restore();
@@ -2018,6 +2314,20 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         case 'grid_bubble': {
           const gb = entity as GridBubbleEntity;
           const gr2 = 14 * t.scale;
+          // Draw the grid line (extends from bubble based on direction and length)
+          const gbLen = ((gb as any).length || 10000) * ppm;
+          const gbDir = (gb as any).direction || 'vertical';
+          ctx.save(); ctx.setLineDash([8, 4]); ctx.lineWidth = 0.5; ctx.strokeStyle = color;
+          ctx.beginPath();
+          if (gbDir === 'vertical') {
+            ctx.moveTo(gb.x * ppm, gb.y * ppm + gr2);
+            ctx.lineTo(gb.x * ppm, gb.y * ppm + gbLen);
+          } else {
+            ctx.moveTo(gb.x * ppm + gr2, gb.y * ppm);
+            ctx.lineTo(gb.x * ppm + gbLen, gb.y * ppm);
+          }
+          ctx.stroke(); ctx.restore();
+          // Draw circle bubble
           ctx.beginPath(); ctx.arc(gb.x * ppm, gb.y * ppm, gr2, 0, Math.PI * 2); ctx.stroke();
           ctx.font = `bold ${Math.max(9, 12 * t.scale)}px JetBrains Mono`;
           ctx.fillStyle = color;
@@ -2037,18 +2347,22 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         }
         case 'keynote': {
           const kn = entity as KeynoteEntity;
-          if (kn.leaderPoints.length > 1) {
+          if (kn.leaderPoints.length > 0) {
             ctx.beginPath();
             ctx.moveTo(kn.leaderPoints[0].x * ppm, kn.leaderPoints[0].y * ppm);
             for (let i = 1; i < kn.leaderPoints.length; i++) ctx.lineTo(kn.leaderPoints[i].x * ppm, kn.leaderPoints[i].y * ppm);
+            if (dist(kn.leaderPoints[kn.leaderPoints.length - 1], { x: kn.x, y: kn.y }) > 0.1) {
+              ctx.lineTo(kn.x * ppm, kn.y * ppm);
+            }
             ctx.stroke();
             // Text bubble at last point
-            const lp = kn.leaderPoints[kn.leaderPoints.length - 1];
+            const lp = { x: kn.x, y: kn.y };
             ctx.font = `${Math.max(8, 10 * t.scale)}px JetBrains Mono`;
-            const ktw = ctx.measureText(kn.keynoteId || 'KN1').width + 6;
+            const noteText = kn.text || kn.keynoteId || 'KN1';
+            const ktw = ctx.measureText(noteText).width + 6;
             ctx.strokeRect(lp.x * ppm, lp.y * ppm - 12, ktw, 16);
             ctx.fillStyle = color;
-            ctx.fillText(kn.keynoteId || 'KN1', lp.x * ppm + 3, lp.y * ppm);
+            ctx.fillText(noteText, lp.x * ppm + 3, lp.y * ppm);
           }
           break;
         }
@@ -2288,8 +2602,9 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       ctx.beginPath(); ctx.moveTo(0, scr.y); ctx.lineTo(W, scr.y); ctx.stroke();
       ctx.setLineDash([]);
     }
-  }, [transform, floor.entities, layers, drawPts, cursor, snapIndicator, activeTool,
-      selectedIds, wallThickness, selBox, xformState, applyOrtho, pxPerMm, worldToScreen, polygonSides]);
+    }, [transform, floor.entities, layers, drawPts, cursor, snapIndicator, activeTool,
+      selectedIds, wallThickness, selBox, xformState, applyOrtho, pxPerMm, worldToScreen, polygonSides,
+      getLayerState, isEntityVisibleOnCanvas]);
 
   // Re-draw on changes
   useEffect(() => { draw(); }, [draw]);
@@ -2321,8 +2636,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     const tol = SELECTION_TOL_MM;
     for (let i = floor.entities.length - 1; i >= 0; i--) {
       const e = floor.entities[i];
-      const layer = layers.find(l => l.name === e.layer);
-      if (layer && (!layer.visible || layer.locked)) continue;
+      if (!isEntitySelectable(e)) continue;
 
       switch (e.type) {
         case 'wall': case 'line': case 'beam': case 'curtainwall': {
@@ -2438,6 +2752,17 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         }
         case 'dimension': {
           const dm = e as DimensionEntity;
+          const dimKind = dm.dimKind ?? 'linear';
+          if (dimKind === 'angular' && 'x3' in dm && 'y3' in dm) {
+            const center = { x: (dm as any).x3, y: (dm as any).y3 };
+            const radius = Math.max(1, Math.abs(dm.offset) || dist(center, { x: dm.x1, y: dm.y1 }) * 0.6);
+            if (Math.abs(dist(pt, center) - radius) < tol * 2) return e;
+            break;
+          }
+          if (dimKind === 'radius' || dimKind === 'diameter' || dimKind === 'ordinate') {
+            if (pointToSegmentDist(pt, { x: dm.x1, y: dm.y1 }, { x: dm.x2, y: dm.y2 }) < tol) return e;
+            break;
+          }
           const n = perpNormal({ x: dm.x1, y: dm.y1 }, { x: dm.x2, y: dm.y2 });
           const o1 = { x: dm.x1 + n.x * dm.offset, y: dm.y1 + n.y * dm.offset };
           const o2 = { x: dm.x2 + n.x * dm.offset, y: dm.y2 + n.y * dm.offset };
@@ -2531,8 +2856,16 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           break;
         }
         case 'block_ref': {
-          const br = e as any;
-          if (dist(pt, { x: br.x, y: br.y }) < 500 + tol) return e;
+          const br = e as BlockRefEntity;
+          const block = blocks.find(def => def.name === br.blockName);
+          if (!block) {
+            if (dist(pt, { x: br.x, y: br.y }) < 500 + tol) return e;
+            break;
+          }
+          const vertices = getEntitySelectionVertices(e);
+          if (vertices.some(vertex => dist(pt, vertex) < tol * 2)) return e;
+          const bbox = boundingBox(vertices);
+          if (pt.x >= bbox.min.x - tol && pt.x <= bbox.max.x + tol && pt.y >= bbox.min.y - tol && pt.y <= bbox.max.y + tol) return e;
           break;
         }
 
@@ -2679,7 +3012,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       }
     }
     return null;
-  }, [floor.entities, layers]);
+  }, [floor.entities, isEntitySelectable, blocks, getEntitySelectionVertices]);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // MOUSE HANDLERS
@@ -2700,7 +3033,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     setCursor(snapped.pt);
 
     // Selection box dragging
-    if (activeTool === 'select' && selBox) {
+    if ((activeTool === 'select' || activeTool === 'window_select' || activeTool === 'crossing_select') && selBox) {
       setSelBox({ ...selBox, end: world });
     }
 
@@ -2714,8 +3047,8 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     const dStr = drawPts.length > 0
       ? `  |  D: ${(dist(drawPts[drawPts.length - 1], pt) / 1000).toFixed(3)}m  A: ${(angleBetween(drawPts[drawPts.length - 1], pt) * 180 / Math.PI).toFixed(1)}°`
       : '';
-    onStatusChange(`X: ${(pt.x / 1000).toFixed(3)}  Y: ${(pt.y / 1000).toFixed(3)}${dStr}  [${snapped.kind}]`);
-  }, [isPanning, panStart, transform, screenToWorld, snap, drawPts, activeTool, selBox, xformState, onStatusChange]);
+    queueStatus(`X: ${(pt.x / 1000).toFixed(3)}  Y: ${(pt.y / 1000).toFixed(3)}${dStr}  [${snapped.kind}]`);
+  }, [isPanning, panStart, transform, screenToWorld, snap, drawPts, activeTool, selBox, xformState, queueStatus]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -2748,13 +3081,23 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         const hit = hitTest(pt);
         if (hit) {
           if (e.shiftKey) {
+            setPreviousSelection(selectedIds);
             setSelectedIds(prev => prev.includes(hit.id) ? prev.filter(i => i !== hit.id) : [...prev, hit.id]);
           } else {
-            if (!selectedIds.includes(hit.id)) setSelectedIds([hit.id]);
+            if (!selectedIds.includes(hit.id)) { setPreviousSelection(selectedIds); setSelectedIds([hit.id]); }
           }
         } else {
-          if (!e.shiftKey) setSelectedIds([]);
+          if (!e.shiftKey) { setPreviousSelection(selectedIds); setSelectedIds([]); }
           setSelBox({ start: pt, end: pt });
+        }
+        break;
+      }
+
+      // ── Window / Crossing select (dedicated tools) ─────────────────
+      case 'window_select': case 'crossing_select': {
+        if (!selBox) {
+          setSelBox({ start: pt, end: pt });
+          cmdLog(`${activeTool === 'window_select' ? 'Window' : 'Crossing'} Select: drag to define rectangle`);
         }
         break;
       }
@@ -2778,18 +3121,42 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         if (selectedIds.length === 0) { cmdLog('Select entities to offset first'); return; }
         const input = prompt('Offset distance (mm):', '200');
         if (!input || isNaN(Number(input))) { cmdLog('Invalid distance'); setActiveTool('select'); return; }
+        const offsetDistance = Number(input);
         pushUndo('Offset');
         const selectedEntities = floor.entities.filter(e => selectedIds.includes(e.id));
-        invoke<any>('perform_geom_op', { op: 'offset', entities: selectedEntities, params: { distance: Number(input) } })
-          .then(res => {
-            if (res?.results?.length > 0) {
-              const newEnts = res.results.map((r: any) => ({ ...r, id: uid() }));
-              onFloorChange({ ...floor, entities: [...floor.entities, ...newEnts] });
-              cmdLog(`Offset ${newEnts.length} entities by ${input}mm`);
-            } else { cmdLog('No geometry generated'); }
-          })
-          .catch(err => cmdLog(`Offset error: ${err}`))
-          .finally(() => setActiveTool('select'));
+        const newEnts: AnyEntity[] = [];
+        for (const ent of selectedEntities) {
+          if (ent.type === 'line') {
+            const l = ent as LineEntity;
+            const len = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
+            if (len < 0.1) continue;
+            const nx = -(l.y2 - l.y1) / len * offsetDistance;
+            const ny = (l.x2 - l.x1) / len * offsetDistance;
+            newEnts.push({ ...l, id: uid(), x1: l.x1 + nx, y1: l.y1 + ny, x2: l.x2 + nx, y2: l.y2 + ny } as AnyEntity);
+          } else if (ent.type === 'polyline') {
+            const pl = ent as PolylineEntity;
+            const offsetPts = offsetPolyline(pl.points, offsetDistance);
+            newEnts.push({ ...pl, id: uid(), points: offsetPts } as AnyEntity);
+          } else if (ent.type === 'circle') {
+            const c = ent as CircleEntity;
+            newEnts.push({ ...c, id: uid(), radius: Math.max(1, c.radius + offsetDistance) } as AnyEntity);
+          } else if (ent.type === 'rectangle') {
+            const r = ent as RectangleEntity;
+            newEnts.push({ ...r, id: uid(), x1: r.x1 - offsetDistance, y1: r.y1 - offsetDistance, x2: r.x2 + offsetDistance, y2: r.y2 + offsetDistance } as AnyEntity);
+          } else if (ent.type === 'wall') {
+            const w = ent as WallEntity;
+            const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1);
+            if (len < 0.1) continue;
+            const nx = -(w.y2 - w.y1) / len * offsetDistance;
+            const ny = (w.x2 - w.x1) / len * offsetDistance;
+            newEnts.push({ ...w, id: uid(), x1: w.x1 + nx, y1: w.y1 + ny, x2: w.x2 + nx, y2: w.y2 + ny } as AnyEntity);
+          }
+        }
+        if (newEnts.length > 0) {
+          onFloorChange({ ...floor, entities: [...floor.entities, ...newEnts] });
+          cmdLog(`Offset ${newEnts.length} entities by ${input}mm`);
+        } else { cmdLog('Offset not supported for selected entity types'); }
+        setActiveTool('select');
         break;
       }
 
@@ -2798,19 +3165,54 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         const hit = hitTest(pt);
         if (!hit) { cmdLog('Click on an entity to trim'); return; }
         pushUndo('Trim');
-        const others = floor.entities.filter(e => e.id !== hit.id);
-        invoke<any>('perform_geom_op', {
-          op: 'trim',
-          entities: [hit, ...others.slice(0, 5)],
-          params: { boundary_id: others[0]?.id || '', click_pt: [pt.x, pt.y] },
-        }).then(res => {
-          if (res?.results?.length > 0) {
-            const trimmed = res.results[0];
-            trimmed.id = hit.id;
-            onFloorChange({ ...floor, entities: floor.entities.map(e => e.id === hit.id ? trimmed : e) });
-            cmdLog('Entity trimmed');
+        // Front-end trim implementation for line entities
+        if (hit.type === 'line' || hit.type === 'wall' || hit.type === 'beam') {
+          const line = hit as any;
+          const boundaries = floor.entities.filter(ent => ent.id !== hit.id && (ent.type === 'line' || ent.type === 'wall' || ent.type === 'beam'));
+          // Find all intersections
+          const intersections: Vec2[] = [];
+          for (const bnd of boundaries) {
+            const b = bnd as any;
+            const ip = segSegIntersect(
+              { x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 },
+              { x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }
+            );
+            if (ip) intersections.push(ip);
           }
-        }).catch(err => cmdLog(`Trim error: ${err}`));
+          if (intersections.length === 0) { cmdLog('No boundary intersections found'); break; }
+          // Sort intersections along the line
+          const lineDir = { x: line.x2 - line.x1, y: line.y2 - line.y1 };
+          const lineLen = Math.hypot(lineDir.x, lineDir.y);
+          const project = (v: Vec2) => ((v.x - line.x1) * lineDir.x + (v.y - line.y1) * lineDir.y) / (lineLen * lineLen);
+          const clickT = project(pt);
+          intersections.sort((a, b) => project(a) - project(b));
+          // Find the segment the click falls in, and remove it
+          let trimStart = { x: line.x1, y: line.y1 };
+          let trimEnd = { x: line.x2, y: line.y2 };
+          const tValues = intersections.map(project);
+          // Find interval containing the click
+          let lowerIp: Vec2 | null = null;
+          let upperIp: Vec2 | null = null;
+          for (let i = 0; i < tValues.length; i++) {
+            if (tValues[i] <= clickT) lowerIp = intersections[i];
+            if (tValues[i] > clickT && !upperIp) upperIp = intersections[i];
+          }
+          if (lowerIp && upperIp) {
+            // Click between two intersections: split into two lines, remove middle
+            const l1: AnyEntity = { ...hit, id: uid(), x2: lowerIp.x, y2: lowerIp.y } as any;
+            const l2: AnyEntity = { ...hit, id: uid(), x1: upperIp.x, y1: upperIp.y } as any;
+            onFloorChange({ ...floor, entities: [...floor.entities.filter(e => e.id !== hit.id), l1, l2] });
+          } else if (lowerIp) {
+            // Click past the last intersection: trim to that intersection
+            onFloorChange({ ...floor, entities: floor.entities.map(e => e.id === hit.id ? { ...e, x2: lowerIp!.x, y2: lowerIp!.y } as any : e) });
+          } else if (upperIp) {
+            // Click before the first intersection: trim from that intersection
+            onFloorChange({ ...floor, entities: floor.entities.map(e => e.id === hit.id ? { ...e, x1: upperIp!.x, y1: upperIp!.y } as any : e) });
+          }
+          cmdLog('Entity trimmed');
+        } else {
+          cmdLog('Trim currently supports line/wall/beam entities');
+        }
         break;
       }
 
@@ -2848,11 +3250,22 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
                 x2: pg.cx + pg.radius * Math.cos(a2), y2: pg.cy + pg.radius * Math.sin(a2),
               });
             }
+          } else if (e.type === 'block_ref') {
+            const ref = e as BlockRefEntity;
+            const block = blocks.find(def => def.name === ref.blockName);
+            if (block) {
+              const exploded = instantiateBlockReference(block, ref).map(ent => ({
+                ...ent,
+                id: uid(),
+                layer: ref.layer,
+              }));
+              newEntities.push(...exploded);
+            }
           }
         }
         onFloorChange({ ...floor, entities: [...floor.entities.filter(e => !toRemove.has(e.id)), ...newEntities] });
         setSelectedIds(newEntities.map(e => e.id));
-        cmdLog(`Exploded ${toRemove.size} entities into ${newEntities.length} lines`);
+        cmdLog(`Exploded ${toRemove.size} entities into ${newEntities.length} primitives`);
         setActiveTool('select');
         break;
       }
@@ -3153,16 +3566,18 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         break;
       }
       case 'door': {
+        const preset = DOOR_PRESETS[doorPreset];
         pushUndo('Place door');
         onFloorChange({ ...floor, entities: [...floor.entities,
-          { id: uid(), type: 'door', layer: 'Doors', x: pt.x, y: pt.y, width: 900, height: 2100, swing: 90 }] });
+          { id: uid(), type: 'door', layer: 'Doors', x: pt.x, y: pt.y, width: doorWidth, height: preset.height, swing: 90, doorType: preset.doorType, openDirection: preset.openDirection }] });
         cmdLog('Door placed.');
         break;
       }
       case 'window': {
+        const preset = WINDOW_PRESETS[windowPreset];
         pushUndo('Place window');
         onFloorChange({ ...floor, entities: [...floor.entities,
-          { id: uid(), type: 'window', layer: 'Windows', x: pt.x, y: pt.y, width: 1200, height: 1200, sillHeight: 900 }] });
+          { id: uid(), type: 'window', layer: 'Windows', x: pt.x, y: pt.y, width: windowWidth, height: preset.height, sillHeight: preset.sillHeight, windowType: preset.windowType, panes: preset.windowType === 'fixed' ? 1 : 2 }] });
         cmdLog('Window placed.');
         break;
       }
@@ -3373,6 +3788,10 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       }
       case 'block_insert': {
         if (blocks.length === 0) { cmdLog('No blocks defined. Create one first.'); break; }
+        if (!isLayerSelectable(activeLayer)) {
+          cmdLog(`Layer "${activeLayer}" is not editable. Pick a visible, unfrozen, unlocked layer.`);
+          break;
+        }
         const name = prompt(`Insert block (${blocks.map(b => b.name).join(', ')}):`);
         if (!name) break;
         const block = blocks.find(b => b.name === name);
@@ -3405,14 +3824,15 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
       // ── Utility tools ───────────────────────────────────────────────
       case 'select_all': {
-        setSelectedIds(floor.entities.map(en => en.id));
-        cmdLog(`Selected all ${floor.entities.length} entities.`);
+        const selectableIds = floor.entities.filter(isEntitySelectable).map(en => en.id);
+        setSelectedIds(selectableIds);
+        cmdLog(`Selected ${selectableIds.length} editable entities.`);
         break;
       }
       case 'select_similar': {
         const hit = hitTest(pt);
         if (!hit) { cmdLog('Click on an entity to select similar'); break; }
-        const similar = floor.entities.filter(e => e.type === hit.type && e.layer === hit.layer).map(e => e.id);
+        const similar = floor.entities.filter(e => isEntitySelectable(e) && e.type === hit.type && e.layer === hit.layer).map(e => e.id);
         setSelectedIds(similar);
         cmdLog(`Selected ${similar.length} similar entities (type=${hit.type}, layer=${hit.layer}).`);
         break;
@@ -3514,6 +3934,31 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         setActiveTool('select');
         break;
       }
+      case 'break': {
+        // Break: click two points on a line to remove a gap
+        const hit = hitTest(pt);
+        if (!hit || (hit.type !== 'line' && hit.type !== 'polyline')) { cmdLog('Click on a line/polyline to break'); break; }
+        if (drawPts.length === 0) {
+          setDrawPts([pt]);
+          setSelectedIds([hit.id]);
+          cmdLog('Break: click second point to define break gap');
+        } else {
+          pushUndo('Break');
+          if (hit.type === 'line') {
+            const line = hit as LineEntity;
+            const line1: AnyEntity = { id: uid(), type: 'line', layer: line.layer, x1: line.x1, y1: line.y1, x2: drawPts[0].x, y2: drawPts[0].y };
+            const line2: AnyEntity = { id: uid(), type: 'line', layer: line.layer, x1: pt.x, y1: pt.y, x2: line.x2, y2: line.y2 };
+            onFloorChange({ ...floor, entities: [...floor.entities.filter(e => e.id !== hit.id), line1, line2] });
+          } else {
+            // For polyline, just break at the two nearest points
+            onFloorChange({ ...floor, entities: floor.entities.filter(e => e.id !== hit.id) });
+          }
+          cmdLog('Entity broken.');
+          setDrawPts([]);
+          setActiveTool('select');
+        }
+        break;
+      }
       case 'break_at_point': {
         const hit = hitTest(pt);
         if (!hit || hit.type !== 'line') { cmdLog('Click on a line to break at point'); break; }
@@ -3569,21 +4014,31 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       case 'layer_isolate': {
         const hit = hitTest(pt);
         if (!hit) { cmdLog('Click on an entity to isolate its layer'); break; }
+        setPreIsolateSnapshot(Object.fromEntries(layers.map(l => [l.name, l.visible])));
         onLayersChange(layers.map(l => ({ ...l, visible: l.name === hit.layer })));
         cmdLog(`Layer "${hit.layer}" isolated.`);
         setActiveTool('select');
         break;
       }
       case 'layer_unisolate': {
-        onLayersChange(layers.map(l => ({ ...l, visible: true })));
-        cmdLog('All layers visible.');
+        if (preIsolateSnapshot) {
+          onLayersChange(layers.map(l => ({ ...l, visible: preIsolateSnapshot[l.name] ?? true })));
+          setPreIsolateSnapshot(null);
+          cmdLog('Layers restored to pre-isolation state.');
+        } else {
+          onLayersChange(layers.map(l => ({ ...l, visible: true })));
+          cmdLog('All layers visible.');
+        }
         setActiveTool('select');
         break;
       }
       case 'layer_freeze': {
         const hit = hitTest(pt);
         if (!hit) { cmdLog('Click on an entity to freeze its layer'); break; }
-        onLayersChange(layers.map(l => l.name === hit.layer ? { ...l, visible: false, locked: true } : l));
+        onLayersChange(layers.map(l => l.name === hit.layer ? { ...l, visible: false, locked: true, frozen: true } : l));
+        if (activeLayer === hit.layer) {
+          setActiveLayer(pickEditableLayer(hit.layer));
+        }
         cmdLog(`Layer "${hit.layer}" frozen.`);
         setActiveTool('select');
         break;
@@ -3592,6 +4047,9 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         const hit = hitTest(pt);
         if (!hit) { cmdLog('Click on an entity to turn off its layer'); break; }
         onLayersChange(layers.map(l => l.name === hit.layer ? { ...l, visible: false } : l));
+        if (activeLayer === hit.layer) {
+          setActiveLayer(pickEditableLayer(hit.layer));
+        }
         cmdLog(`Layer "${hit.layer}" off.`);
         setActiveTool('select');
         break;
@@ -3636,7 +4094,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         const typeFilter = prompt('Entity type to select (e.g. line, wall, circle, all):', 'all');
         if (typeFilter) {
           const matched = floor.entities.filter(ent =>
-            typeFilter === 'all' || ent.type === typeFilter
+            isEntitySelectable(ent) && (typeFilter === 'all' || ent.type === typeFilter)
           );
           setSelectedIds(matched.map(ent => ent.id));
           cmdLog(`Quick Select: ${matched.length} entities of type "${typeFilter}"`);
@@ -3645,10 +4103,19 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         break;
       }
       case 'select_previous': {
-        cmdLog(`Select Previous: restored ${selectedIds.length} previous selections`);
+        if (previousSelection.length > 0) {
+          const current = [...selectedIds];
+          setSelectedIds(previousSelection);
+          setPreviousSelection(current);
+          cmdLog(`Select Previous: restored ${previousSelection.length} entities`);
+        } else {
+          cmdLog('No previous selection stored');
+        }
+        setActiveTool('select');
         break;
       }
       case 'deselect_all': {
+        setPreviousSelection(selectedIds);
         setSelectedIds([]);
         cmdLog('All entities deselected');
         setActiveTool('select');
@@ -3791,37 +4258,31 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
       // ── Extended Arch tools ──────────────────────────────────────────
       case 'furniture': {
-        const cat = prompt('Furniture type (chair/desk/table/sofa/bed/cabinet/shelf):', 'chair');
+        const preset = FURNITURE_PRESETS[furniturePreset];
         pushUndo('Place furniture');
-        const widthMap: Record<string, number> = { chair: 500, desk: 1200, table: 1500, sofa: 2000, bed: 2000, cabinet: 800, shelf: 900 };
-        const depthMap: Record<string, number> = { chair: 500, desk: 600, table: 900, sofa: 800, bed: 1500, cabinet: 400, shelf: 300 };
-        const fw = widthMap[cat || 'chair'] || 600;
-        const fd = depthMap[cat || 'chair'] || 600;
         const newFurn: AnyEntity = { id: uid(), type: 'furniture', layer: 'Furniture',
-          x: pt.x, y: pt.y, width: fw, depth: fd, rotation: 0, category: cat || 'chair', name: cat || 'chair' } as any;
+          x: pt.x, y: pt.y, width: preset.width, depth: preset.depth, rotation: 0, category: furniturePreset, name: preset.name } as any;
         onFloorChange({ ...floor, entities: [...floor.entities, newFurn] });
-        cmdLog(`Placed ${cat || 'chair'}`);
+        cmdLog(`Placed ${preset.name}`);
         break;
       }
       case 'appliance': {
-        const cat = prompt('Appliance type (oven/fridge/washer/dryer/dishwasher/microwave):', 'oven');
+        const preset = APPLIANCE_PRESETS[appliancePreset];
         pushUndo('Place appliance');
         const newApp: AnyEntity = { id: uid(), type: 'appliance', layer: 'Furniture',
-          x: pt.x, y: pt.y, width: 600, depth: 600, rotation: 0, category: cat || 'oven', name: cat || 'oven' } as any;
+          x: pt.x, y: pt.y, width: preset.width, depth: preset.depth, rotation: 0, category: appliancePreset, name: preset.name } as any;
         onFloorChange({ ...floor, entities: [...floor.entities, newApp] });
-        cmdLog(`Placed ${cat || 'oven'}`);
+        cmdLog(`Placed ${preset.name}`);
         break;
       }
       case 'fixture': {
-        const cat = prompt('Fixture type (sink/toilet/bathtub/shower/vanity/bidet):', 'sink');
+        const preset = FIXTURE_PRESETS[fixturePreset];
         pushUndo('Place fixture');
-        const fxWidthMap: Record<string, number> = { sink: 500, toilet: 400, bathtub: 1700, shower: 900, vanity: 600, bidet: 350 };
-        const fxDepthMap: Record<string, number> = { sink: 400, toilet: 700, bathtub: 700, shower: 900, vanity: 500, bidet: 600 };
         const newFix: AnyEntity = { id: uid(), type: 'fixture', layer: 'Plumbing',
-          x: pt.x, y: pt.y, width: fxWidthMap[cat || 'sink'] || 500, depth: fxDepthMap[cat || 'sink'] || 400,
-          rotation: 0, category: cat || 'sink', name: cat || 'sink' } as any;
+          x: pt.x, y: pt.y, width: preset.width, depth: preset.depth,
+          rotation: 0, category: fixturePreset, name: preset.name } as any;
         onFloorChange({ ...floor, entities: [...floor.entities, newFix] });
-        cmdLog(`Placed ${cat || 'sink'}`);
+        cmdLog(`Placed ${preset.name}`);
         break;
       }
       case 'structural_member': {
@@ -3961,7 +4422,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           const offset = 500 * drawPts.length;
           const newDim: AnyEntity = { id: uid(), type: 'dimension', layer: 'Dimensions',
             x1: drawPts[0].x, y1: drawPts[0].y, x2: pt.x, y2: pt.y,
-            offset: offset, kind: 'linear' } as any;
+            offset: offset, dimKind: 'linear' } as any;
           onFloorChange({ ...floor, entities: [...floor.entities, newDim] });
           setDrawPts([...drawPts, pt]);
           cmdLog(`Baseline dim added: ${(dist(drawPts[0], pt)/1000).toFixed(3)}m`);
@@ -3975,7 +4436,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           pushUndo('Continue Dim');
           const newDim: AnyEntity = { id: uid(), type: 'dimension', layer: 'Dimensions',
             x1: drawPts[drawPts.length - 1].x, y1: drawPts[drawPts.length - 1].y,
-            x2: pt.x, y2: pt.y, offset: 500, kind: 'linear' } as any;
+            x2: pt.x, y2: pt.y, offset: 500, dimKind: 'linear' } as any;
           onFloorChange({ ...floor, entities: [...floor.entities, newDim] });
           setDrawPts([...drawPts, pt]);
           cmdLog(`Continue dim: ${(dist(drawPts[drawPts.length - 1], pt)/1000).toFixed(3)}m`);
@@ -4067,28 +4528,43 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           const newL = layers.map(l => l.name === hit.layer ? { ...l, locked: true } : l);
           onLayersChange(newL);
           cmdLog(`Layer "${hit.layer}" locked`);
-        }
+        } else { cmdLog('Click on an entity to lock its layer'); }
         setActiveTool('select');
         break;
       }
       case 'layer_unlock': {
-        const newL = layers.map(l => ({ ...l, locked: false }));
-        onLayersChange(newL);
-        cmdLog('All layers unlocked');
+        const hit = hitTest(pt);
+        if (hit) {
+          const newL = layers.map(l => l.name === hit.layer ? { ...l, locked: false } : l);
+          onLayersChange(newL);
+          cmdLog(`Layer "${hit.layer}" unlocked`);
+        } else {
+          // Fallback: unlock all
+          onLayersChange(layers.map(l => ({ ...l, locked: l.frozen ? true : false })));
+          cmdLog('All non-frozen layers unlocked');
+        }
         setActiveTool('select');
         break;
       }
       case 'layer_on': {
-        const newL = layers.map(l => ({ ...l, visible: true }));
-        onLayersChange(newL);
-        cmdLog('All layers on');
+        const hit = hitTest(pt);
+        if (hit) {
+          const newL = layers.map(l => l.name === hit.layer ? { ...l, visible: true } : l);
+          onLayersChange(newL);
+          cmdLog(`Layer "${hit.layer}" on`);
+        } else {
+          // Fallback: turn on all non-frozen layers
+          onLayersChange(layers.map(l => ({ ...l, visible: l.frozen ? false : true })));
+          cmdLog('All non-frozen layers on');
+        }
         setActiveTool('select');
         break;
       }
       case 'layer_thaw': {
-        const newL = layers.map(l => ({ ...l, visible: true, locked: false }));
+        const frozenCount = layers.filter(l => l.frozen).length;
+        const newL = layers.map(l => l.frozen ? { ...l, visible: true, locked: false, frozen: false } : l);
         onLayersChange(newL);
-        cmdLog('All layers thawed');
+        cmdLog(`Thawed ${frozenCount} frozen layers`);
         setActiveTool('select');
         break;
       }
@@ -4104,7 +4580,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       case 'layer_make': {
         const name = prompt('New layer name:');
         if (name && !layers.find(l => l.name === name)) {
-          onLayersChange([...layers, { name, color: '#ffffff', visible: true, locked: false, lineweight: 0.25, linetype: 'continuous' }]);
+          onLayersChange([...layers, { name, color: '#ffffff', visible: true, locked: false, frozen: false, lineweight: 0.25, linetype: 'continuous' }]);
           setActiveLayer(name);
           cmdLog(`Layer "${name}" created and set as current`);
         }
@@ -4119,6 +4595,10 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
             cmdLog(`Cannot delete layer "${name}" - ${entsOnLayer.length} entities on it`);
           } else {
             onLayersChange(layers.filter(l => l.name !== name));
+            if (activeLayer === name) {
+              const fallbackLayer = layers.find(layer => layer.name !== name);
+              if (fallbackLayer) setActiveLayer(fallbackLayer.name);
+            }
             cmdLog(`Layer "${name}" deleted`);
           }
         }
@@ -4128,19 +4608,27 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       case 'layer_merge': {
         const from = prompt('Layer to merge FROM:');
         const to = prompt('Layer to merge TO:');
-        if (from && to && from !== to) {
+        if (from && to && from !== to && layers.some(layer => layer.name === to)) {
           pushUndo('Layer Merge');
           const newEnts = floor.entities.map(ent => ent.layer === from ? { ...ent, layer: to } : ent);
           onFloorChange({ ...floor, entities: newEnts });
           onLayersChange(layers.filter(l => l.name !== from));
+          if (activeLayer === from) setActiveLayer(to);
           cmdLog(`Merged layer "${from}" into "${to}"`);
         }
         setActiveTool('select');
         break;
       }
       case 'layer_walk': {
-        const layerNames = [...new Set(floor.entities.map(ent => ent.layer))];
-        cmdLog(`Layer Walk - ${layerNames.length} layers in use: ${layerNames.join(', ')}`);
+        const layerNames = [...new Set(floor.entities.map(ent => ent.layer))].sort();
+        const chosen = prompt(`Layer Walk — ${layerNames.length} layers in use:\n${layerNames.join(', ')}\n\nType a layer name to isolate (enter to show all):`, '');
+        if (chosen && layerNames.includes(chosen)) {
+          onLayersChange(layers.map(l => ({ ...l, visible: l.name === chosen })));
+          cmdLog(`Layer Walk: showing only "${chosen}"`);
+        } else {
+          onLayersChange(layers.map(l => ({ ...l, visible: true })));
+          cmdLog(`Layer Walk: all layers visible`);
+        }
         setActiveTool('select');
         break;
       }
@@ -4417,7 +4905,21 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       }
 
       // ── Selection filters ───────────────────────────────────────────
-      case 'select_filter': { cmdLog('Selection Filter: define filter criteria'); setActiveTool('select'); break; }
+      case 'select_filter': {
+        const typeF = prompt('Filter by entity type (leave empty to skip):');
+        const layerF = prompt('Filter by layer name (leave empty to skip):');
+        const colorF = prompt('Filter by color hex (leave empty to skip):');
+        const matched = floor.entities.filter(ent => {
+          if (typeF && ent.type !== typeF) return false;
+          if (layerF && ent.layer !== layerF) return false;
+          if (colorF && ent.color !== colorF) return false;
+          return true;
+        }).map(ent => ent.id);
+        setPreviousSelection(selectedIds);
+        setSelectedIds(matched);
+        cmdLog(`Selection Filter: ${matched.length} entities match criteria`);
+        setActiveTool('select'); break;
+      }
       case 'select_by_type': {
         const type = prompt('Entity type to select (e.g. wall, line, circle):');
         if (type) {
@@ -4514,9 +5016,13 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         break;
       }
       case 'array_path': {
-        if (selectedIds.length === 0) { cmdLog('Select objects and a path polyline for path array'); return; }
-        cmdLog('Path array: click along path, right-click to finish. (Simplified placement)');
-        setDrawPts(prev => [...prev, pt]);
+        if (selectedIds.length === 0) { cmdLog('Select objects for path array, then click path points'); return; }
+        if (drawPts.length === 0) {
+          setDrawPts([pt]);
+          cmdLog('Path array: click along path, right-click to finish.');
+        } else {
+          setDrawPts(prev => [...prev, pt]);
+        }
         break;
       }
 
@@ -5337,12 +5843,11 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         }
         break;
       }
-      case 'fence_select': case 'lasso_select': {
-        // Select entities that intersect with the fence/lasso path
+      case 'fence_select': {
+        // Fence select: entities with vertex near fence path segments
         const selResult = floor.entities.filter(en => {
-          const layer = layers.find(l => l.name === en.layer);
-          if (layer && (!layer.visible || layer.locked)) return false;
-          const verts = entityVertices(en);
+          if (!isEntitySelectable(en)) return false;
+          const verts = getEntitySelectionVertices(en);
           return verts.some(v => {
             for (let i = 0; i < drawPts.length - 1; i++) {
               if (pointToSegmentDist(v, drawPts[i], drawPts[i + 1]) < SELECTION_TOL_MM) return true;
@@ -5350,8 +5855,24 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
             return false;
           });
         }).map(e => e.id);
+        setPreviousSelection(selectedIds);
         setSelectedIds(selResult);
-        cmdLog(`Fence/lasso selected ${selResult.length} entities.`);
+        cmdLog(`Fence selected ${selResult.length} entities.`);
+        break;
+      }
+      case 'lasso_select': {
+        // Lasso select: close the path and select entities fully enclosed
+        if (drawPts.length < 3) { cmdLog('Lasso needs at least 3 points'); break; }
+        const lassoPoly = [...drawPts, drawPts[0]]; // close it
+        const lassoResult = floor.entities.filter(en => {
+          if (!isEntitySelectable(en)) return false;
+          const verts = getEntitySelectionVertices(en);
+          if (verts.length === 0) return false;
+          return verts.every(v => pointInPolygon(v, lassoPoly));
+        }).map(e => e.id);
+        setPreviousSelection(selectedIds);
+        setSelectedIds(lassoResult);
+        cmdLog(`Lasso selected ${lassoResult.length} entities.`);
         break;
       }
       // ── MEP multi-point finishers ──────────────────────────────────
@@ -5432,7 +5953,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           const txt = prompt('Keynote text:','NOTE');
           newE = { id: uid(), type: 'keynote', layer: 'Annotation',
             x: drawPts[drawPts.length-1].x, y: drawPts[drawPts.length-1].y,
-            leaderPoints: drawPts.slice(0, -1), keynoteId: '1', text: txt || 'NOTE' } as any;
+            leaderPoints: drawPts, keynoteId: '1', text: txt || 'NOTE' } as any;
         }
         break;
       }
@@ -5446,6 +5967,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       case 'array_path': {
         // Create copies along the drawn path
         if (drawPts.length >= 2 && selectedIds.length > 0) {
+          pushUndo('Path Array');
           const sel = floor.entities.filter(ent => selectedIds.includes(ent.id));
           const newEnts: AnyEntity[] = [];
           for (let i = 0; i < drawPts.length; i++) {
@@ -5508,13 +6030,21 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       cmdLog(`${activeTool} entity created (${drawPts.length} points)`);
     }
     setDrawPts([]);
-  }, [activeTool, drawPts, floor, layers, onFloorChange, activeLayer, wallHeight, pushUndo, cmdLog, mlineOffsets, selectedIds, entityVertices, conduitSize, pipeSize, ductWidth]);
+  }, [activeTool, drawPts, floor, onFloorChange, activeLayer, wallHeight, pushUndo, cmdLog, mlineOffsets, selectedIds, conduitSize, pipeSize, ductWidth, isEntitySelectable, getEntitySelectionVertices]);
 
   // ── Apply transform ─────────────────────────────────────────────────────
   const applyTransform = useCallback((target: Vec2) => {
     if (!xformState) return;
     const { basepoint } = xformState;
     const dx = target.x - basepoint.x, dy = target.y - basepoint.y;
+    const selectedSet = new Set(selectedIds);
+    const editableSelection = floor.entities.filter(e => selectedSet.has(e.id) && isEntitySelectable(e));
+    if (editableSelection.length === 0) {
+      cmdLog('No editable entities selected on visible, unfrozen, unlocked layers.');
+      setXformState(null);
+      return;
+    }
+    const blockedCount = selectedSet.size - editableSelection.length;
     pushUndo(activeTool);
 
     const transformEntity = (e: AnyEntity): AnyEntity => {
@@ -5553,49 +6083,63 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       }
       // Scale radius if scaling
       if (activeTool === 'scale' && 'radius' in clone) {
-        clone.radius *= Math.max(0.01, Math.hypot(dx, dy) / 1000);
+        const s = Math.max(0.01, Math.hypot(dx, dy) / 1000);
+        clone.radius *= s;
+      }
+      if (activeTool === 'scale') {
+        const s = Math.max(0.01, Math.hypot(dx, dy) / 1000);
+        if ('width' in clone && typeof clone.width === 'number') clone.width *= s;
+        if ('height' in clone && typeof clone.height === 'number' && clone.type !== 'dimension') clone.height *= s;
+        if ('depth' in clone && typeof clone.depth === 'number') clone.depth *= s;
+        if ('thickness' in clone && typeof clone.thickness === 'number') clone.thickness *= s;
       }
       if (activeTool === 'copy' || activeTool === 'mirror') clone.id = uid();
       return clone;
     };
 
     if (activeTool === 'copy' || activeTool === 'mirror') {
-      const copies = floor.entities.filter(e => selectedIds.includes(e.id)).map(transformEntity);
+      const copies = editableSelection.map(transformEntity);
       onFloorChange({ ...floor, entities: [...floor.entities, ...copies] });
       setSelectedIds(copies.map(e => e.id));
     } else {
-      onFloorChange({ ...floor, entities: floor.entities.map(e => selectedIds.includes(e.id) ? transformEntity(e) : e) });
+      onFloorChange({
+        ...floor,
+        entities: floor.entities.map(e => (selectedSet.has(e.id) && isEntitySelectable(e)) ? transformEntity(e) : e),
+      });
     }
     setXformState(null);
-    cmdLog(`${activeTool} complete`);
+    cmdLog(blockedCount > 0
+      ? `${activeTool} complete (${blockedCount} blocked by layer state)`
+      : `${activeTool} complete`);
     if (activeTool !== 'copy') setActiveTool('select');
-  }, [xformState, activeTool, floor, selectedIds, onFloorChange, pushUndo, cmdLog]);
+  }, [xformState, activeTool, floor, selectedIds, onFloorChange, pushUndo, cmdLog, isEntitySelectable]);
 
   // ── Mouse up ────────────────────────────────────────────────────────────
   const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     setIsPanning(false); setPanStart(null);
 
-    if (activeTool === 'select' && selBox) {
+    if ((activeTool === 'select' || activeTool === 'window_select' || activeTool === 'crossing_select') && selBox) {
       const { start, end } = selBox;
       if (Math.hypot(end.x - start.x, end.y - start.y) > 100) {
-        const isCrossing = end.x < start.x;
+        const isCrossing = activeTool === 'crossing_select' || (activeTool === 'select' && end.x < start.x);
         const minX = Math.min(start.x, end.x), maxX = Math.max(start.x, end.x);
         const minY = Math.min(start.y, end.y), maxY = Math.max(start.y, end.y);
         const ptIn = (p: Vec2) => p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
 
         const newSel = floor.entities.filter(en => {
-          const layer = layers.find(l => l.name === en.layer);
-          if (layer && (!layer.visible || layer.locked)) return false;
-          const verts = entityVertices(en);
+          if (!isEntitySelectable(en)) return false;
+          const verts = getEntitySelectionVertices(en);
           if (verts.length === 0) return false;
           return isCrossing ? verts.some(ptIn) : verts.every(ptIn);
         }).map(e => e.id);
 
+        setPreviousSelection(selectedIds);
         setSelectedIds(e.shiftKey ? prev => [...new Set([...prev, ...newSel])] : newSel);
       }
       setSelBox(null);
+      if (activeTool === 'window_select' || activeTool === 'crossing_select') setActiveTool('select');
     }
-  }, [activeTool, selBox, floor.entities, layers]);
+  }, [activeTool, selBox, floor.entities, selectedIds, isEntitySelectable, getEntitySelectionVertices]);
 
   // ── Wheel zoom ──────────────────────────────────────────────────────────
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -5610,11 +6154,16 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   }, []);
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const isEditableTarget = useCallback((target: EventTarget | null) => {
+    const node = target as HTMLElement | null;
+    return !!node && (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.tagName === 'SELECT' || node.isContentEditable);
+  }, []);
+
+  const runKeyCommand = useCallback((e: { key: string; ctrlKey: boolean; altKey: boolean; preventDefault: () => void }) => {
     // Ctrl+Z / Ctrl+Y
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); return; }
     if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); return; }
-    if (e.ctrlKey && e.key === 'a') { e.preventDefault(); setSelectedIds(floor.entities.map(en => en.id)); return; }
+    if (e.ctrlKey && e.key === 'a') { e.preventDefault(); setSelectedIds(floor.entities.filter(isEntitySelectable).map(en => en.id)); return; }
 
     const k = e.key;
     if (k === 'Escape') { setDrawPts([]); setSelectedIds([]); setXformState(null); setActiveTool('select'); }
@@ -5631,12 +6180,14 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     if (k === 'F3') { e.preventDefault(); setEndpointSnapOn(v => !v); cmdLog(`Endpoint Snap: ${!endpointSnapOn ? 'ON' : 'OFF'}`); }
 
     // Single-key tool shortcuts
-    const map: Record<string, Tool> = {
-      l: 'line', w: 'wall', c: 'circle', a: 'arc', m: 'move', s: 'select', p: 'polyline',
-      r: 'rectangle', t: 'text', n: 'dimension', e: 'ellipse', h: 'pan',
-    };
-    if (!e.ctrlKey && !e.altKey && map[k.toLowerCase()]) setActiveTool(map[k.toLowerCase()]);
-  }, [selectedIds, floor, onFloorChange, undo, redo, pushUndo, cmdLog, orthoOn, gridSnapOn, endpointSnapOn]);
+    const tool = PLANS_SINGLE_KEY_SHORTCUTS[k.toLowerCase()];
+    if (!e.ctrlKey && !e.altKey && tool) setActiveTool(tool as Tool);
+  }, [floor, onFloorChange, undo, redo, pushUndo, cmdLog, orthoOn, gridSnapOn, endpointSnapOn, isEntitySelectable]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (isEditableTarget(e.target)) return;
+    runKeyCommand(e);
+  }, [isEditableTarget, runKeyCommand]);
 
   // ── Fit to screen ───────────────────────────────────────────────────────
   const fitToScreen = () => {
@@ -5644,7 +6195,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     if (!canvas || floor.entities.length === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const e of floor.entities) {
-      for (const v of entityVertices(e)) {
+      for (const v of getEntitySelectionVertices(e)) {
         if (v.x < minX) minX = v.x; if (v.y < minY) minY = v.y;
         if (v.x > maxX) maxX = v.x; if (v.y > maxY) maxY = v.y;
       }
@@ -5658,6 +6209,41 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     const ty = H / 2 - ((minY + maxY) / 2) / MM_PER_PX * s;
     setTransform({ x: tx, y: ty, scale: s });
   };
+
+  useEffect(() => {
+    const onWindowKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      runKeyCommand(e);
+    };
+
+    const onUndo = () => undo();
+    const onRedo = () => redo();
+    const onSelectAll = () => setSelectedIds(floor.entities.filter(isEntitySelectable).map(en => en.id));
+    const onDelete = () => {
+      if (selectedIds.length === 0) return;
+      pushUndo('Delete');
+      onFloorChange({ ...floor, entities: floor.entities.filter(en => !selectedIds.includes(en.id)) });
+      cmdLog(`Deleted ${selectedIds.length} entities`);
+      setSelectedIds([]);
+    };
+    const onZoomFit = () => fitToScreen();
+
+    window.addEventListener('keydown', onWindowKeyDown);
+    window.addEventListener('archflow:undo', onUndo as EventListener);
+    window.addEventListener('archflow:redo', onRedo as EventListener);
+    window.addEventListener('archflow:selectall', onSelectAll as EventListener);
+    window.addEventListener('archflow:delete', onDelete as EventListener);
+    window.addEventListener('archflow:zoomfit', onZoomFit as EventListener);
+
+    return () => {
+      window.removeEventListener('keydown', onWindowKeyDown);
+      window.removeEventListener('archflow:undo', onUndo as EventListener);
+      window.removeEventListener('archflow:redo', onRedo as EventListener);
+      window.removeEventListener('archflow:selectall', onSelectAll as EventListener);
+      window.removeEventListener('archflow:delete', onDelete as EventListener);
+      window.removeEventListener('archflow:zoomfit', onZoomFit as EventListener);
+    };
+  }, [isEditableTarget, runKeyCommand, undo, redo, floor, selectedIds, onFloorChange, pushUndo, cmdLog, isEntitySelectable]);
 
   // ── Export DXF ──────────────────────────────────────────────────────────
   const handleExportDXF = async () => {
@@ -5962,7 +6548,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     else if (cmd === 'qselect') {
       const type = prompt('Entity type to select (line/circle/wall/etc):');
       if (type) {
-        const sel = floor.entities.filter(e => e.type === type).map(e => e.id);
+        const sel = floor.entities.filter(e => isEntitySelectable(e) && e.type === type).map(e => e.id);
         setSelectedIds(sel);
         cmdLog(`Quick-selected ${sel.length} "${type}" entities.`);
       }
@@ -6036,13 +6622,35 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     onFloorChange({ ...floor, entities: floor.entities.map(e => e.id === id ? { ...e, ...updates } as AnyEntity : e) });
   };
 
+  const handleInsertAsset = useCallback((block: BlockDef) => {
+    // Register the block definition if not already known
+    setBlocks(prev => {
+      if (prev.find(b => b.name === block.name)) return prev;
+      return [...prev, JSON.parse(JSON.stringify(block)) as BlockDef];
+    });
+    // Insert a block_ref at the center of the viewport
+    const viewportCenter = screenToWorld(
+      (canvasRef.current?.width || 800) / 2,
+      (canvasRef.current?.height || 600) / 2,
+      transform,
+    );
+    pushUndo('Insert asset');
+    const ref: AnyEntity = {
+      id: uid(), type: 'block_ref', layer: activeLayer,
+      blockName: block.name, x: viewportCenter.x, y: viewportCenter.y, scaleX: 1, scaleY: 1, rotation: 0,
+    } as any;
+    onFloorChange({ ...floor, entities: [...floor.entities, ref] });
+    setSelectedIds([ref.id]);
+    cmdLog(`Inserted asset "${block.name}" — use Move tool to position.`);
+  }, [transform, floor, activeLayer, onFloorChange, pushUndo, cmdLog, screenToWorld]);
+
   const selectedObjects = floor.entities.filter(e => selectedIds.includes(e.id));
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="plans-tab" tabIndex={0} onKeyDown={handleKeyDown} style={{ outline: 'none' }}>
+    <div className="plans-tab" tabIndex={0} style={{ outline: 'none' }}>
       {/* Left toolbar */}
       <div className="draft-toolbar">
         {TOOL_GROUPS.map(group => (
@@ -6276,6 +6884,14 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         )}
         {activeTool === 'door' && (
           <div className="tool-options-bar">
+            <span className="label">Preset</span>
+            <select value={doorPreset} onChange={e => {
+              const next = e.target.value as keyof typeof DOOR_PRESETS;
+              setDoorPreset(next);
+              setDoorWidth(DOOR_PRESETS[next].width);
+            }} style={{ width: 96 }}>
+              {Object.keys(DOOR_PRESETS).map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
             <span className="label">Width</span>
             <input type="number" value={doorWidth} onChange={e => setDoorWidth(Number(e.target.value))} style={{ width: 60 }} min={600} max={2400} step={50} />
             <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>mm</span>
@@ -6283,6 +6899,14 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
         )}
         {activeTool === 'window' && (
           <div className="tool-options-bar">
+            <span className="label">Preset</span>
+            <select value={windowPreset} onChange={e => {
+              const next = e.target.value as keyof typeof WINDOW_PRESETS;
+              setWindowPreset(next);
+              setWindowWidth(WINDOW_PRESETS[next].width);
+            }} style={{ width: 108 }}>
+              {Object.keys(WINDOW_PRESETS).map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
             <span className="label">Width</span>
             <input type="number" value={windowWidth} onChange={e => setWindowWidth(Number(e.target.value))} style={{ width: 60 }} min={300} max={5000} step={50} />
             <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>mm</span>
@@ -6489,6 +7113,20 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
           {showLayers && (
             <div style={{ maxHeight: 220, overflow: 'auto' }}>
               <LayerManager layers={layers} onLayersChange={onLayersChange} activeLayer={activeLayer} onActiveLayerChange={setActiveLayer} />
+            </div>
+          )}
+        </div>
+
+        {/* Asset Library */}
+        <div className="right-panel-section">
+          <div className="right-panel-header" onClick={() => setShowAssetLib(v => !v)} style={{ cursor: 'pointer' }}>
+            <Download size={12} />
+            <span>Assets</span>
+            <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--text-muted)' }}>{showAssetLib ? '▾' : '▸'}</span>
+          </div>
+          {showAssetLib && (
+            <div style={{ maxHeight: 320, overflow: 'auto' }}>
+              <AssetLibrary onInsertAsset={handleInsertAsset} />
             </div>
           )}
         </div>

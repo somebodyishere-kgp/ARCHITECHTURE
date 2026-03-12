@@ -1,0 +1,118 @@
+.keybindings-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  overflow: auto;
+  background:
+    radial-gradient(circle at top right, rgba(88, 166, 255, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%);
+}
+
+.keybindings-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-surface);
+}
+
+.keybindings-hero h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.keybindings-hero p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.keybindings-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent);
+}
+
+.keybindings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.keybindings-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.keybindings-card-title {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.keybindings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.keybinding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.keybinding-row:first-child {
+  border-top: none;
+}
+
+.keybinding-action {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.keybinding-action div {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.keybinding-action span {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.keybinding-row kbd {
+  min-width: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+}

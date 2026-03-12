@@ -1341,19 +1341,12 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   // ─── Generate 3D model ────────────────────────────────────────────
   const handleGenerate3D = async () => {
     setIsGenerating(true);
-    onStatusChange('Generating 3D model from floor plan…');
-    try {
-      const result = await invoke<Record<string, unknown>>('convert_to_3d', {
-        floorData: { entities: floor.entities, floor_height: floor.floorHeight }
-      });
-      setSceneData(result);
-      buildThreeScene(result);
-    } catch {
-      buildFromEntities();
-    }
+    onStatusChange('Rebuilding 3D base model from current floor…');
+    setSceneData(null);
+    buildFromEntities();
     setHasModel(true);
     setIsGenerating(false);
-    onStatusChange(`3D model generated — ${floor.entities.length} entities`);
+    onStatusChange(`3D base model synced from 2D — ${floor.entities.length} entities`);
   };
 
   // ─── Import glTF/GLB model ────────────────────────────────────────
@@ -2292,6 +2285,20 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     }
   };
 
+  useEffect(() => {
+    if (!sceneRef.current) return;
+
+    if (floor.entities.length === 0) {
+      clearArchObjects();
+      setSceneData(null);
+      setHasModel(false);
+      return;
+    }
+
+    buildFromEntities();
+    setHasModel(true);
+  }, [floor.entities, floor.floorHeight, visibleCategories, showShadows]);
+
   // ─── Build from backend scene data ────────────────────────────
   const buildThreeScene = (data: Record<string, unknown>) => {
     clearArchObjects();
@@ -2789,10 +2796,10 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                 <path d="M2 12L12 17L22 12" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" opacity="0.7"/>
               </svg>
             </div>
-            <h3>No 3D Model</h3>
-            <p>Draw a floor plan in the Plans tab,<br/>then click "Generate 3D" to convert it.</p>
+            <h3>No 2D Geometry Yet</h3>
+            <p>Draw walls, slabs, roofs, doors, windows, and furniture in the Plans tab.<br/>The 3D base model will appear here automatically.</p>
             <button className="btn primary" onClick={handleGenerate3D}>
-              <RefreshCw size={13}/> Generate 3D from Floor Plan
+              <RefreshCw size={13}/> Rebuild Base Model
             </button>
           </div>
         )}
@@ -2842,7 +2849,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
             <button className="btn primary" style={{ width: '100%', fontSize: 11 }}
               onClick={handleGenerate3D} disabled={isGenerating}>
               <RefreshCw size={11}/>
-              {isGenerating ? 'Generating…' : 'Update 3D'}
+              {isGenerating ? 'Syncing…' : 'Resync from 2D'}
             </button>
             <button className="btn outline" style={{ width: '100%', fontSize: 11, marginTop: 4 }}
               onClick={zoomToFit}>

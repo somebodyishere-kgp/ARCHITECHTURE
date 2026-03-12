@@ -679,6 +679,7 @@ export interface Layer {
   color: string;
   visible: boolean;
   locked: boolean;
+  frozen?: boolean;
   lineweight: number;
   linetype: Linetype;
   printable?: boolean;

@@ -1,47 +1,134 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { Layers, Box, FileText, Cpu, FolderOpen, Save, FilePlus, Settings, HelpCircle, ChevronDown } from 'lucide-react';
+import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
 import { ADFProject, createProject } from './lib/adf';
 import PlansTab from './tabs/PlansTab';
 import ThreeDTab from './tabs/ThreeDTab';
 import DocsTab from './tabs/DocsTab';
+import KeybindingsTab from './tabs/KeybindingsTab';
 import AIChat from './components/AIChat';
 import './App.css';
 
-type TabId = 'plans' | '3d' | 'docs';
+type TabId = 'plans' | '3d' | 'docs' | 'keys';
 
 interface Tab { id: TabId; label: string; icon: React.ReactNode; shortcut: string; }
+
+const AUTOSAVE_KEY = 'archflow.autosave.project.v1';
+const UI_STATE_KEY = 'archflow.ui-state.v1';
 
 const TABS: Tab[] = [
   { id: 'plans', label: '2D Plans',      icon: <Layers size={14}/>,   shortcut: '1' },
   { id: '3d',    label: '3D / Render',   icon: <Box size={14}/>,      shortcut: '2' },
   { id: 'docs',  label: 'Documentation', icon: <FileText size={14}/>, shortcut: '3' },
+  { id: 'keys',  label: 'Keybindings',   icon: <Keyboard size={14}/>, shortcut: '4' },
 ];
 
 export default function App() {
+  const hydratedRef = useRef(false);
   const [activeTab, setActiveTab] = useState<TabId>('plans');
   const [project, setProject] = useState<ADFProject>(createProject('Untitled Project'));
   const [showAI, setShowAI] = useState(false);
   const [activeFloorIndex, setActiveFloorIndex] = useState(0);
   const [statusMsg, setStatusMsg] = useState('Ready');
-  const [isDragging, setIsDragging] = useState(false);
 
   const activeFloor = project.floors[activeFloorIndex];
+
+  useEffect(() => {
+    try {
+      const savedProject = window.localStorage.getItem(AUTOSAVE_KEY);
+      if (savedProject) {
+        const parsed = JSON.parse(savedProject) as ADFProject;
+        if (parsed && Array.isArray(parsed.floors) && Array.isArray(parsed.layers)) {
+          setProject(parsed);
+          setStatusMsg('Recovered autosaved project');
+        }
+      }
+
+      const savedUi = window.localStorage.getItem(UI_STATE_KEY);
+      if (savedUi) {
+        const parsedUi = JSON.parse(savedUi) as { activeTab?: TabId; activeFloorIndex?: number };
+        if (parsedUi.activeTab && TABS.some(tab => tab.id === parsedUi.activeTab)) {
+          setActiveTab(parsedUi.activeTab);
+        }
+        if (typeof parsedUi.activeFloorIndex === 'number') {
+          setActiveFloorIndex(Math.max(0, parsedUi.activeFloorIndex));
+        }
+      }
+    } catch {
+      setStatusMsg('Autosave recovery failed, starting clean');
+    } finally {
+      hydratedRef.current = true;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const timeoutId = window.setTimeout(() => {
+      window.localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(project));
+    }, 300);
+    return () => window.clearTimeout(timeoutId);
+  }, [project]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    window.localStorage.setItem(UI_STATE_KEY, JSON.stringify({ activeTab, activeFloorIndex }));
+  }, [activeTab, activeFloorIndex]);
+
+  useEffect(() => {
+    if (!project.floors[activeFloorIndex]) {
+      setActiveFloorIndex(0);
+    }
+  }, [project.floors, activeFloorIndex]);
+
+  useEffect(() => {
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) {
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void handleSave();
+        return;
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        void handleOpen();
+        return;
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        handleNewProject();
+        return;
+      }
+
+      if (!event.ctrlKey && !event.altKey) {
+        if (event.key === '1') setActiveTab('plans');
+        else if (event.key === '2') setActiveTab('3d');
+        else if (event.key === '3') setActiveTab('docs');
+        else if (event.key === '4') setActiveTab('keys');
+      }
+    };
+
+    window.addEventListener('keydown', onWindowKeyDown);
+    return () => window.removeEventListener('keydown', onWindowKeyDown);
+  });
 
   const updateProject = useCallback((updater: (p: ADFProject) => ADFProject) => {
     setProject(prev => ({ ...updater(prev), modifiedAt: new Date().toISOString() }));
   }, []);
 
-  const handleNewProject = () => {
+  const handleNewProject = useCallback(() => {
     if (confirm('Create a new project? Unsaved changes will be lost.')) {
       setProject(createProject('Untitled Project'));
       setActiveFloorIndex(0);
       setStatusMsg('New project created');
     }
-  };
+  }, []);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     try {
       setStatusMsg('Saving…');
       const filePath = await save({ filters: [{ name: 'ADF Project', extensions: ['adf.json'] }], defaultPath: `${project.projectName}.adf.json` });
@@ -51,9 +138,9 @@ export default function App() {
     } catch (err) {
       setStatusMsg(`Error saving: ${err}`);
     }
-  };
+  }, [project]);
 
-  const handleOpen = async () => {
+  const handleOpen = useCallback(async () => {
     try {
       const filePath = await open({ filters: [{ name: 'ADF Project', extensions: ['adf.json', 'json'] }] });
       if (!filePath) return;
@@ -67,7 +154,7 @@ export default function App() {
     } catch (err) {
       setStatusMsg(`Open failed: ${err}`);
     }
-  };
+  }, []);
 
   const handleExportDXF = async () => {
     try {
@@ -133,7 +220,7 @@ export default function App() {
           {[
             { label: 'File', items: ['New Project', 'Open…', 'Save', 'Save As…', '---', 'Export DXF', 'Export PDF', '---', 'Exit'] },
             { label: 'Edit', items: ['Undo', 'Redo', '---', 'Select All', 'Delete Selected'] },
-            { label: 'View', items: ['Plans (1)', '3D / Render (2)', 'Documentation (3)', '---', 'Toggle AI Panel', 'Zoom Fit'] },
+            { label: 'View', items: ['Plans (1)', '3D / Render (2)', 'Documentation (3)', 'Keybindings (4)', '---', 'Toggle AI Panel', 'Zoom Fit'] },
             { label: 'Help', items: ['Documentation', 'About ArchFlow'] },
           ].map(menu => (
             <MenuDropdown key={menu.label} label={menu.label} items={menu.items}
@@ -152,6 +239,7 @@ export default function App() {
                 else if (item === 'Plans (1)') setActiveTab('plans');
                 else if (item === '3D / Render (2)') setActiveTab('3d');
                 else if (item === 'Documentation (3)') setActiveTab('docs');
+                else if (item === 'Keybindings (4)') setActiveTab('keys');
                 else if (item === 'Toggle AI Panel') setShowAI(v => !v);
                 else if (item === 'Zoom Fit') window.dispatchEvent(new CustomEvent('archflow:zoomfit'));
               }}
@@ -215,7 +303,7 @@ export default function App() {
       <div className="main-content">
         {/* Tab Views */}
         <div className="tab-content">
-          <div style={{ display: activeTab === 'plans' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+          {activeTab === 'plans' && (
             <PlansTab
               floor={activeFloor}
               layers={project.layers}
@@ -229,8 +317,8 @@ export default function App() {
               onLayersChange={(layers) => updateProject(p => ({ ...p, layers }))}
               onStatusChange={setStatusMsg}
             />
-          </div>
-          <div style={{ display: activeTab === '3d' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+          )}
+          {activeTab === '3d' && (
             <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
               onEntityUpdate={(entities) => {
                 updateProject(p => {
@@ -239,10 +327,11 @@ export default function App() {
                   return { ...p, floors };
                 });
               }} />
-          </div>
-          <div style={{ display: activeTab === 'docs' ? 'flex' : 'none', width: '100%', height: '100%' }}>
+          )}
+          {activeTab === 'docs' && (
             <DocsTab project={project} onProjectChange={setProject} onStatusChange={setStatusMsg} />
-          </div>
+          )}
+          {activeTab === 'keys' && <KeybindingsTab />}
         </div>
 
         {/* AI Chat Panel */}
