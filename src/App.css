@@ -147,11 +147,11 @@
 .timeline-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-left: 10px;
 }
 .timeline-controls input[type='range'] {
-  width: 140px;
+  width: 120px;
 }
 .timeline-controls select {
   background: var(--bg-overlay);
@@ -159,7 +159,8 @@
   color: var(--text-primary);
   border-radius: 4px;
   font-size: 11px;
-  padding: 3px 6px;
+  padding: 2px 5px;
+  max-width: 120px;
 }
 .timeline-time {
   font-size: 11px;

@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect, lazy, Suspense } from 
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
-import { ADFProject, ProjectPresetLibrary, createProject } from './lib/adf';
+import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { propagateFloorDependencies } from './lib/systemGraph';
 import { compareBranches, createBranchFromActive, ensureGraph, switchToBranch } from './lib/branchGraph';
@@ -38,6 +38,8 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState('Ready');
   const [isTimelinePlaying, setIsTimelinePlaying] = useState(false);
   const [timelineSpeed, setTimelineSpeed] = useState(1);
+  const [selectedTrackId, setSelectedTrackId] = useState('');
+  const lastPlaybackEventRef = useRef<string | null>(null);
 
   const activeFloor = project.floors[activeFloorIndex];
 
@@ -149,6 +151,34 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [isTimelinePlaying, timelineSpeed, updateProject]);
 
+  useEffect(() => {
+    const tracks = project.timeline?.tracks || [];
+    if (tracks.length === 0) {
+      if (selectedTrackId) setSelectedTrackId('');
+      return;
+    }
+    if (!selectedTrackId || !tracks.some(track => track.id === selectedTrackId)) {
+      setSelectedTrackId(tracks[0].id);
+    }
+  }, [project.timeline?.tracks, selectedTrackId]);
+
+  useEffect(() => {
+    const activeTime = project.timeline?.activeTime || 0;
+    const tracks = project.timeline?.tracks || [];
+    const elapsed = tracks
+      .flatMap(track => track.events)
+      .filter(event => event.time <= activeTime)
+      .sort((a, b) => b.time - a.time);
+
+    const latest = elapsed[0];
+    if (latest && latest.id !== lastPlaybackEventRef.current) {
+      lastPlaybackEventRef.current = latest.id;
+      if (isTimelinePlaying) {
+        setStatusMsg(`Timeline event: ${latest.type} @ T${latest.time.toFixed(1)} d`);
+      }
+    }
+  }, [project.timeline?.activeTime, project.timeline?.tracks, isTimelinePlaying]);
+
   const handleNewProject = useCallback(() => {
     if (confirm('Create a new project? Unsaved changes will be lost.')) {
       setProject(createProject('Untitled Project'));
@@ -228,6 +258,79 @@ export default function App() {
       setStatusMsg(`Branch compare failed: ${err}`);
     }
   }, [project]);
+
+  const handleAddTimelineTrack = useCallback(() => {
+    const rawName = prompt('Timeline track name', `Track ${Math.max(1, (project.timeline?.tracks.length || 0) + 1)}`);
+    if (!rawName) return;
+    const name = rawName.trim();
+    if (!name) return;
+
+    const rawKind = prompt('Track kind (construction, aging, sun, occupancy, maintenance, custom)', 'construction');
+    const allowedKinds: TimelineTrack['kind'][] = ['construction', 'aging', 'sun', 'occupancy', 'maintenance', 'custom'];
+    const kind = (rawKind || 'construction').trim() as TimelineTrack['kind'];
+    const safeKind = allowedKinds.includes(kind) ? kind : 'custom';
+
+    const nextTrackId = uid();
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: [...timeline.tracks, { id: nextTrackId, name, kind: safeKind, events: [] }],
+        },
+      };
+    });
+    setSelectedTrackId(nextTrackId);
+    setStatusMsg(`Timeline track added: ${name}`);
+  }, [project.timeline?.tracks.length, updateProject]);
+
+  const handleAddTimelineEvent = useCallback(() => {
+    if (!selectedTrackId) {
+      setStatusMsg('Select or create a timeline track first');
+      return;
+    }
+
+    const eventType = (prompt('Event type', 'snapshot') || '').trim();
+    if (!eventType) return;
+
+    const activeTime = project.timeline?.activeTime || 0;
+    const rawTime = prompt('Event time (days)', activeTime.toFixed(1));
+    if (!rawTime) return;
+    const parsedTime = Number(rawTime);
+    if (!Number.isFinite(parsedTime) || parsedTime < 0) {
+      setStatusMsg('Invalid event time');
+      return;
+    }
+
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: timeline.tracks.map(track => (
+            track.id !== selectedTrackId
+              ? track
+              : {
+                  ...track,
+                  events: [
+                    ...track.events,
+                    {
+                      id: uid(),
+                      time: parsedTime,
+                      type: eventType,
+                      entityId: activeFloor?.id,
+                      payload: { entityCount: activeFloor?.entities.length || 0 },
+                    },
+                  ].sort((a, b) => a.time - b.time),
+                }
+          )),
+        },
+      };
+    });
+    setStatusMsg(`Timeline event added: ${eventType} @ T${parsedTime.toFixed(1)} d`);
+  }, [activeFloor, project.timeline?.activeTime, selectedTrackId, updateProject]);
 
   const handleExportDXF = async () => {
     try {
@@ -412,6 +515,17 @@ export default function App() {
             <option value={2}>2x</option>
             <option value={4}>4x</option>
           </select>
+          <select
+            value={selectedTrackId}
+            onChange={e => setSelectedTrackId(e.target.value)}
+            title="Timeline track"
+          >
+            {(project.timeline?.tracks || []).map(track => (
+              <option key={track.id} value={track.id}>{track.name}</option>
+            ))}
+          </select>
+          <button className="btn ghost" onClick={handleAddTimelineTrack} title="Create track">Track+</button>
+          <button className="btn ghost" onClick={handleAddTimelineEvent} title="Add event">Event+</button>
           <span className="timeline-time">T {Number(project.timeline?.activeTime || 0).toFixed(1)} d</span>
         </div>
       </div>
