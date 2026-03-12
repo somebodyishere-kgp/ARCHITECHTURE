@@ -5,7 +5,7 @@ import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-rea
 import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { propagateFloorDependencies } from './lib/systemGraph';
-import { compareBranches, createBranchFromActive, ensureGraph, switchToBranch } from './lib/branchGraph';
+import { captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, switchToBranch } from './lib/branchGraph';
 import { evaluateConstraintRuleGraph } from './lib/constraintRules';
 import AIChat from './components/AIChat';
 import './App.css';
@@ -39,6 +39,7 @@ export default function App() {
   const [isTimelinePlaying, setIsTimelinePlaying] = useState(false);
   const [timelineSpeed, setTimelineSpeed] = useState(1);
   const [selectedTrackId, setSelectedTrackId] = useState('');
+  const [compareBaseBranchId, setCompareBaseBranchId] = useState('');
   const lastPlaybackEventRef = useRef<string | null>(null);
 
   const activeFloor = project.floors[activeFloorIndex];
@@ -163,6 +164,19 @@ export default function App() {
   }, [project.timeline?.tracks, selectedTrackId]);
 
   useEffect(() => {
+    const graph = ensureGraph(project);
+    const activeId = graph.activeBranchId;
+    const candidates = graph.nodes.filter(node => node.id !== activeId);
+    if (candidates.length === 0) {
+      if (compareBaseBranchId) setCompareBaseBranchId('');
+      return;
+    }
+    if (!compareBaseBranchId || !candidates.some(node => node.id === compareBaseBranchId)) {
+      setCompareBaseBranchId(candidates[0].id);
+    }
+  }, [project, compareBaseBranchId]);
+
+  useEffect(() => {
     const activeTime = project.timeline?.activeTime || 0;
     const tracks = project.timeline?.tracks || [];
     const elapsed = tracks
@@ -243,7 +257,7 @@ export default function App() {
   const handleCompareActiveBranch = useCallback(() => {
     const graph = ensureGraph(project);
     const activeId = graph.activeBranchId;
-    const baseline = graph.nodes.find(node => node.id !== activeId);
+    const baseline = graph.nodes.find(node => node.id === compareBaseBranchId) || graph.nodes.find(node => node.id !== activeId);
     if (!baseline) {
       setStatusMsg('Need at least two branches to compare');
       return;
@@ -251,13 +265,36 @@ export default function App() {
 
     try {
       const comparison = compareBranches(project, baseline.id, activeId);
+      const topDelta = comparison.floors
+        .slice()
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))[0];
       setStatusMsg(
-        `Branch delta vs ${baseline.name}: ${comparison.totalDelta >= 0 ? '+' : ''}${comparison.totalDelta} entities`
+        `Branch delta vs ${baseline.name}: ${comparison.totalDelta >= 0 ? '+' : ''}${comparison.totalDelta} entities${topDelta ? `, max on ${topDelta.floorName}: ${topDelta.delta >= 0 ? '+' : ''}${topDelta.delta}` : ''}`
       );
     } catch (err) {
       setStatusMsg(`Branch compare failed: ${err}`);
     }
-  }, [project]);
+  }, [project, compareBaseBranchId]);
+
+  const handleCaptureActiveBranchSnapshot = useCallback(() => {
+    updateProject(prev => {
+      const graph = ensureGraph(prev);
+      const activeId = graph.activeBranchId;
+      const snapshot = captureBranchSnapshot(prev);
+      return {
+        ...prev,
+        branchGraph: {
+          ...graph,
+          nodes: graph.nodes.map(node => (
+            node.id === activeId
+              ? { ...node, snapshot }
+              : node
+          )),
+        },
+      };
+    });
+    setStatusMsg('Captured snapshot for active branch');
+  }, [updateProject]);
 
   const handleAddTimelineTrack = useCallback(() => {
     const rawName = prompt('Timeline track name', `Track ${Math.max(1, (project.timeline?.tracks.length || 0) + 1)}`);
@@ -484,7 +521,19 @@ export default function App() {
               <option key={node.id} value={node.id}>{node.name}</option>
             ))}
           </select>
+          <select
+            value={compareBaseBranchId}
+            onChange={e => setCompareBaseBranchId(e.target.value)}
+            title="Compare baseline"
+          >
+            {(project.branchGraph?.nodes || [])
+              .filter(node => node.id !== project.branchGraph?.activeBranchId)
+              .map(node => (
+                <option key={node.id} value={node.id}>{node.name}</option>
+              ))}
+          </select>
           <button className="btn ghost" onClick={handleCreateBranch} title="Create branch snapshot">Branch+</button>
+          <button className="btn ghost" onClick={handleCaptureActiveBranchSnapshot} title="Capture snapshot">Snapshot</button>
           <button className="btn ghost" onClick={handleCompareActiveBranch} title="Compare active branch">Compare</button>
         </div>
 
