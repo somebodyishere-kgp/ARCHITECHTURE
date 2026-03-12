@@ -769,9 +769,17 @@ export interface ProjectPresetLibrary {
   worlds: PresetWorld[];
 }
 
+export interface ProjectMigrationEntry {
+  from: number;
+  to: number;
+  timestamp: string;
+  notes: string;
+}
+
 // ─── Top-level project ───────────────────────────────────────────────────────
 export interface ADFProject {
   version: string;
+  schemaVersion?: number;
   projectName: string;
   location: string;
   buildingType: string;
@@ -783,6 +791,7 @@ export interface ADFProject {
   layers: Layer[];
   blocks: BlockDef[];
   presetLibrary?: ProjectPresetLibrary;
+  migrationHistory?: ProjectMigrationEntry[];
   buildingCodes?: Record<string, unknown>;
   generatedFromPrompt?: string;
 }
@@ -798,6 +807,7 @@ export function uid(): string {
 export function createProject(name = 'New Project'): ADFProject {
   return {
     version: '1.0',
+    schemaVersion: 3,
     projectName: name,
     location: '',
     buildingType: 'residential',
@@ -809,6 +819,7 @@ export function createProject(name = 'New Project'): ADFProject {
     layers: defaultLayers(),
     blocks: [],
     presetLibrary: { views: [], sections: [], sectionSets: [], elevations: [], worlds: [] },
+    migrationHistory: [],
   };
 }
 

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
 import { ADFProject, ProjectPresetLibrary, createProject } from './lib/adf';
+import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import AIChat from './components/AIChat';
 import './App.css';
 
@@ -39,10 +40,15 @@ export default function App() {
     try {
       const savedProject = window.localStorage.getItem(AUTOSAVE_KEY);
       if (savedProject) {
-        const parsed = JSON.parse(savedProject) as ADFProject;
-        if (parsed && Array.isArray(parsed.floors) && Array.isArray(parsed.layers)) {
-          setProject(parsed);
-          setStatusMsg('Recovered autosaved project');
+        const parsed = JSON.parse(savedProject) as unknown;
+        const { project: migrated, report } = migrateProjectData(parsed);
+        if (migrated && Array.isArray(migrated.floors) && Array.isArray(migrated.layers)) {
+          setProject(migrated);
+          setStatusMsg(
+            report.applied.length > 0
+              ? `Recovered autosaved project (migrated ${report.from} -> ${report.to})`
+              : 'Recovered autosaved project'
+          );
         }
       }
 
@@ -148,9 +154,14 @@ export default function App() {
       setStatusMsg('Opening project…');
       const result = await invoke<ADFProject>('load_project', { path: filePath });
       if (result) {
-        setProject(result);
+        const { project: migrated, report } = migrateProjectData(result);
+        setProject(migrated);
         setActiveFloorIndex(0);
-        setStatusMsg(`Opened: ${(result as any).projectName || 'project'}`);
+        if (report.applied.length > 0) {
+          setStatusMsg(`Opened: ${(migrated as any).projectName || 'project'} (migrated to schema ${CURRENT_PROJECT_SCHEMA})`);
+        } else {
+          setStatusMsg(`Opened: ${(migrated as any).projectName || 'project'}`);
+        }
       }
     } catch (err) {
       setStatusMsg(`Open failed: ${err}`);
