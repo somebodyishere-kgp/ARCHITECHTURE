@@ -622,6 +622,8 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [showLayers, setShowLayers]   = useState(true);
   const [showAssetLib, setShowAssetLib] = useState(false);
+  const [toolSearch, setToolSearch] = useState('');
+  const [recentTools, setRecentTools] = useState<Tool[]>([]);
   const [snapIndicator, setSnapIndicator] = useState<{ pt: Vec2; kind: string } | null>(null);
 
   // Drafting aids
@@ -6646,6 +6648,27 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
   const selectedObjects = floor.entities.filter(e => selectedIds.includes(e.id));
 
+  const selectTool = useCallback((toolId: Tool) => {
+    setActiveTool(toolId);
+    setDrawPts([]);
+    setXformState(null);
+    setRecentTools(prev => [toolId, ...prev.filter(t => t !== toolId)].slice(0, 8));
+  }, []);
+
+  const toolSearchQuery = toolSearch.trim().toLowerCase();
+  const filteredToolGroups = toolSearchQuery
+    ? TOOL_GROUPS
+        .map(group => ({
+          ...group,
+          tools: group.tools.filter(tool =>
+            tool.label.toLowerCase().includes(toolSearchQuery) ||
+            tool.id.toLowerCase().includes(toolSearchQuery) ||
+            group.label.toLowerCase().includes(toolSearchQuery)
+          ),
+        }))
+        .filter(group => group.tools.length > 0)
+    : TOOL_GROUPS;
+
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════════════════
@@ -6653,14 +6676,49 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     <div className="plans-tab" tabIndex={0} style={{ outline: 'none' }}>
       {/* Left toolbar */}
       <div className="draft-toolbar">
-        {TOOL_GROUPS.map(group => (
+        <div className="tool-search-wrap">
+          <input
+            className="tool-search-input"
+            value={toolSearch}
+            onChange={e => setToolSearch(e.target.value)}
+            placeholder="Find tool"
+          />
+          {toolSearch && (
+            <button className="tool-search-clear" onClick={() => setToolSearch('')}>x</button>
+          )}
+        </div>
+
+        {recentTools.length > 0 && (
+          <div className="tool-group">
+            <div className="tool-group-label">Recent</div>
+            {recentTools.slice(0, 5).map(toolId => {
+              const found = TOOL_GROUPS.flatMap(g => g.tools).find(t => t.id === toolId);
+              if (!found) return null;
+              return (
+                <div key={found.id} className="tooltip-wrapper">
+                  <button
+                    className={`tool-btn${activeTool === found.id ? ' active' : ''}`}
+                    onClick={() => selectTool(found.id)}
+                    title={found.label}
+                  >
+                    {found.icon}
+                  </button>
+                  <span className="tooltip">{found.label}{found.shortcut ? ` (${found.shortcut})` : ''}</span>
+                </div>
+              );
+            })}
+            <div className="divider" />
+          </div>
+        )}
+
+        {filteredToolGroups.map(group => (
           <div key={group.label} className="tool-group">
             <div className="tool-group-label">{group.label}</div>
             {group.tools.map(tool => (
               <div key={tool.id} className="tooltip-wrapper">
                 <button
                   className={`tool-btn${activeTool === tool.id ? ' active' : ''}`}
-                  onClick={() => { setActiveTool(tool.id); setDrawPts([]); setXformState(null); }}
+                  onClick={() => selectTool(tool.id)}
                   title={tool.label}
                 >
                   {tool.icon}

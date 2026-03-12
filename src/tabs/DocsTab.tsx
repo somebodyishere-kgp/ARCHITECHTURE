@@ -40,6 +40,8 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const [loadingCodes, setLoadingCodes] = useState(false);
   const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
   const [sheetZoom, setSheetZoom] = useState(0.5);
+  const [scheduleQuery, setScheduleQuery] = useState('');
+  const [scheduleTypeFilter, setScheduleTypeFilter] = useState<'all' | 'door' | 'window'>('all');
   const sheetCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const allEntities = project.floors.flatMap(f => f.entities);
@@ -50,6 +52,20 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const totalWallLen = calcWallLength(allEntities);
 
   const selectedSheet = project.sheets.find(s => s.id === selectedSheetId) || null;
+
+  const filteredDoors = doors.filter(d => {
+    if (scheduleTypeFilter !== 'all' && scheduleTypeFilter !== 'door') return false;
+    const q = scheduleQuery.trim().toLowerCase();
+    if (!q) return true;
+    return d.id.toLowerCase().includes(q) || d.layer.toLowerCase().includes(q);
+  });
+
+  const filteredWindows = windows.filter(w => {
+    if (scheduleTypeFilter !== 'all' && scheduleTypeFilter !== 'window') return false;
+    const q = scheduleQuery.trim().toLowerCase();
+    if (!q) return true;
+    return w.id.toLowerCase().includes(q) || w.layer.toLowerCase().includes(q);
+  });
 
   // ─── Sheet creation ────────────────────────────────────────────
   const createSheet = (paperSize: string) => {
@@ -81,6 +97,50 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const deleteSheet = (id: string) => {
     onProjectChange({ ...project, sheets: project.sheets.filter(s => s.id !== id) });
     if (selectedSheetId === id) setSelectedSheetId(null);
+  };
+
+  const duplicateSheet = (id: string) => {
+    const source = project.sheets.find(s => s.id === id);
+    if (!source) return;
+    const nextIndex = project.sheets.length + 1;
+    const duplicate: Sheet = {
+      ...JSON.parse(JSON.stringify(source)),
+      id: uid(),
+      name: `${source.name} Copy`,
+      titleBlock: {
+        ...source.titleBlock,
+        sheetNumber: `S${String(nextIndex).padStart(2, '0')}`,
+        date: new Date().toISOString().split('T')[0],
+      },
+    };
+    onProjectChange({ ...project, sheets: [...project.sheets, duplicate] });
+    setSelectedSheetId(duplicate.id);
+    onStatusChange(`Duplicated sheet: ${source.name}`);
+  };
+
+  const updateSelectedSheetTitleBlock = (updates: Partial<TitleBlock>) => {
+    if (!selectedSheet) return;
+    const updatedSheets = project.sheets.map(s => s.id === selectedSheet.id
+      ? { ...s, titleBlock: { ...s.titleBlock, ...updates } }
+      : s
+    );
+    onProjectChange({ ...project, sheets: updatedSheets });
+  };
+
+  const downloadCsv = (filename: string, headers: string[], rows: (string | number)[][]) => {
+    const esc = (v: string | number) => {
+      const text = String(v ?? '');
+      if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+      return text;
+    };
+    const content = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const addViewportToSheet = (sheetId: string, floorIdx: number) => {
@@ -274,6 +334,9 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                     <button className="btn" style={{ fontSize: 10 }} onClick={() => addViewportToSheet(selectedSheet.id, 0)}>
                       <Plus size={10}/> Add Viewport
                     </button>
+                    <button className="btn" style={{ fontSize: 10 }} onClick={() => duplicateSheet(selectedSheet.id)}>
+                      <Plus size={10}/> Duplicate
+                    </button>
                     <button className="btn" onClick={handleExportSheetPDF}><Download size={10}/> Export PDF</button>
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
                       <button className="btn ghost icon-only" onClick={() => setSheetZoom(z => Math.max(0.2, z - 0.1))}><ZoomOut size={12}/></button>
@@ -283,6 +346,38 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   </div>
                   <div style={{ flex: 1, overflow: 'auto', background: '#2a2a2e', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <canvas ref={sheetCanvasRef} />
+                  </div>
+                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                    <input
+                      value={selectedSheet.titleBlock.sheetTitle}
+                      onChange={e => updateSelectedSheetTitleBlock({ sheetTitle: e.target.value })}
+                      placeholder="Sheet title"
+                    />
+                    <input
+                      value={selectedSheet.titleBlock.sheetNumber}
+                      onChange={e => updateSelectedSheetTitleBlock({ sheetNumber: e.target.value })}
+                      placeholder="Sheet number"
+                    />
+                    <input
+                      value={selectedSheet.titleBlock.scale}
+                      onChange={e => updateSelectedSheetTitleBlock({ scale: e.target.value })}
+                      placeholder="Scale"
+                    />
+                    <input
+                      value={selectedSheet.titleBlock.drawnBy}
+                      onChange={e => updateSelectedSheetTitleBlock({ drawnBy: e.target.value })}
+                      placeholder="Drawn by"
+                    />
+                    <input
+                      value={selectedSheet.titleBlock.checkedBy}
+                      onChange={e => updateSelectedSheetTitleBlock({ checkedBy: e.target.value })}
+                      placeholder="Checked by"
+                    />
+                    <input
+                      value={selectedSheet.titleBlock.revision}
+                      onChange={e => updateSelectedSheetTitleBlock({ revision: e.target.value })}
+                      placeholder="Revision"
+                    />
                   </div>
                 </>
               ) : (
@@ -298,7 +393,34 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
         {/* ─ Schedules ─ */}
         {activeView === 'schedules' && (
           <div className="docs-section">
-            <div className="docs-section-header"><h2>Auto-Generated Schedules</h2></div>
+            <div className="docs-section-header">
+              <h2>Auto-Generated Schedules</h2>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  value={scheduleQuery}
+                  onChange={e => setScheduleQuery(e.target.value)}
+                  placeholder="Filter by ID/layer"
+                />
+                <select value={scheduleTypeFilter} onChange={e => setScheduleTypeFilter(e.target.value as 'all' | 'door' | 'window')}>
+                  <option value="all">All</option>
+                  <option value="door">Doors</option>
+                  <option value="window">Windows</option>
+                </select>
+                <button
+                  className="btn"
+                  onClick={() => downloadCsv(
+                    `${project.projectName}_schedules.csv`,
+                    ['Type', 'ID', 'Width_mm', 'Height_mm', 'Sill_mm', 'Swing_deg', 'Layer'],
+                    [
+                      ...filteredDoors.map(d => ['Door', d.id, (d as any).width ?? 900, (d as any).height ?? 2100, '', (d as any).swing ?? 90, d.layer]),
+                      ...filteredWindows.map(w => ['Window', w.id, (w as any).width ?? 1200, (w as any).height ?? 1200, (w as any).sillHeight ?? 900, '', w.layer]),
+                    ]
+                  )}
+                >
+                  <Download size={12}/> Export CSV
+                </button>
+              </div>
+            </div>
 
             <div className="schedule-card">
               <div className="schedule-title">Door Schedule</div>
@@ -307,9 +429,9 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   <tr><th>#</th><th>ID</th><th>Width</th><th>Swing</th><th>Layer</th><th>Type</th></tr>
                 </thead>
                 <tbody>
-                  {doors.length === 0
+                  {filteredDoors.length === 0
                     ? <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--text-muted)' }}>No doors in plan</td></tr>
-                    : doors.map((d, i) => (
+                    : filteredDoors.map((d, i) => (
                       <tr key={d.id}>
                         <td>{i + 1}</td>
                         <td style={{ fontFamily:'var(--font-mono)', fontSize:10 }}>{d.id}</td>
@@ -322,7 +444,7 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   }
                 </tbody>
               </table>
-              <div className="schedule-total">Total: {doors.length} door{doors.length !== 1 ? 's' : ''}</div>
+              <div className="schedule-total">Total: {filteredDoors.length} door{filteredDoors.length !== 1 ? 's' : ''}</div>
             </div>
 
             <div className="schedule-card">
@@ -332,9 +454,9 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   <tr><th>#</th><th>ID</th><th>Width</th><th>Height</th><th>Sill</th><th>Layer</th></tr>
                 </thead>
                 <tbody>
-                  {windows.length === 0
+                  {filteredWindows.length === 0
                     ? <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--text-muted)' }}>No windows in plan</td></tr>
-                    : windows.map((w, i) => (
+                    : filteredWindows.map((w, i) => (
                       <tr key={w.id}>
                         <td>{i + 1}</td>
                         <td style={{ fontFamily:'var(--font-mono)', fontSize:10 }}>{w.id}</td>
@@ -347,7 +469,7 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   }
                 </tbody>
               </table>
-              <div className="schedule-total">Total: {windows.length} window{windows.length !== 1 ? 's' : ''}</div>
+              <div className="schedule-total">Total: {filteredWindows.length} window{filteredWindows.length !== 1 ? 's' : ''}</div>
             </div>
 
             <div className="schedule-card">
@@ -377,15 +499,28 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
           <div className="docs-section">
             <div className="docs-section-header">
               <h2>Bill of Quantities</h2>
-              <button className="btn" onClick={async () => {
-                try {
-                  const filePath = await save({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: `${project.projectName}_BOQ.pdf` });
-                  if (!filePath) return;
-                  onStatusChange('Exporting BOQ PDF…');
-                  await invoke('export_pdf', { floor: { entities: allEntities }, outPath: filePath, title: 'Bill of Quantities' });
-                  onStatusChange(`BOQ exported to ${filePath}`);
-                } catch (err) { onStatusChange(`PDF export: ${err}`); }
-              }}><Download size={12}/> Export PDF</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" onClick={async () => {
+                  try {
+                    const filePath = await save({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: `${project.projectName}_BOQ.pdf` });
+                    if (!filePath) return;
+                    onStatusChange('Exporting BOQ PDF…');
+                    await invoke('export_pdf', { floor: { entities: allEntities }, outPath: filePath, title: 'Bill of Quantities' });
+                    onStatusChange(`BOQ exported to ${filePath}`);
+                  } catch (err) { onStatusChange(`PDF export: ${err}`); }
+                }}><Download size={12}/> Export PDF</button>
+                <button className="btn" onClick={() => downloadCsv(
+                  `${project.projectName}_boq.csv`,
+                  ['Item', 'Description', 'Qty', 'Unit', 'Notes'],
+                  [
+                    ['1.0', 'External Walls (Brick/Block)', totalWallLen.toFixed(1), 'm (run)', 'Measured from plan centreline'],
+                    ['2.0', 'Floor Slab / Flooring', totalArea.toFixed(0), 'm2', 'Approximate bounding box'],
+                    ['3.0', 'Doors (Supply & Fix)', doors.length, 'No.', 'As per door schedule'],
+                    ['4.0', 'Windows (Supply & Fix)', windows.length, 'No.', 'As per window schedule'],
+                    ['5.0', 'Roof / Slab (Upper)', totalArea.toFixed(0), 'm2', 'Flat slab, all floors'],
+                  ]
+                )}><Download size={12}/> Export CSV</button>
+              </div>
             </div>
             <table className="schedule-table" style={{ width: '100%' }}>
               <thead>

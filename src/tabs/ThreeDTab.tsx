@@ -219,6 +219,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [enableOcclusionThrottle, setEnableOcclusionThrottle] = useState(true);
   const [frameTimeMs, setFrameTimeMs]   = useState(0);
   const [showSectionPlane, setShowSectionPlane] = useState(false);
+  const [isIsolationActive, setIsIsolationActive] = useState(false);
   const [sectionHeight, setSectionHeight] = useState(1.2); // meters
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>([]);
@@ -731,6 +732,41 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     }
     updateCamera();
   }, [updateCamera]);
+
+  const focusSelectedObject = useCallback(() => {
+    if (!selectedObjectId || !cameraRef.current) return;
+    const obj = entityMeshMap.current.get(selectedObjectId);
+    if (!obj) return;
+    const box = new THREE.Box3().setFromObject(obj);
+    if (box.isEmpty()) return;
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    orbitTarget.current.copy(center);
+    orbitAngles.current.radius = Math.max(2.5, Math.max(size.x, size.y, size.z) * 2.2);
+    updateCamera();
+    onStatusChange(`Focused: ${selectedObjectId}`);
+  }, [onStatusChange, selectedObjectId, updateCamera]);
+
+  const isolateSelectedObject = useCallback(() => {
+    if (!selectedObjectId || !sceneRef.current) return;
+    sceneRef.current.traverse(obj => {
+      if (!obj.userData?.archflow) return;
+      obj.visible = obj.userData?.id === selectedObjectId;
+    });
+    setIsIsolationActive(true);
+    onStatusChange(`Isolated: ${selectedObjectId}`);
+  }, [onStatusChange, selectedObjectId]);
+
+  const clearIsolation = useCallback(() => {
+    if (!sceneRef.current) return;
+    sceneRef.current.traverse(obj => {
+      if (obj.userData?.archflow) obj.visible = true;
+    });
+    setIsIsolationActive(false);
+    onStatusChange('Isolation cleared');
+  }, [onStatusChange]);
 
   const saveCurrentViewPreset = useCallback(() => {
     if (!cameraRef.current) return;
@@ -3591,6 +3627,21 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
               onClick={zoomToFit}>
               <Maximize size={11}/> Zoom Fit
             </button>
+            <button className="btn outline" style={{ width: '100%', fontSize: 11, marginTop: 4 }}
+              onClick={focusSelectedObject} disabled={!selectedObjectId}>
+              <Crosshair size={11}/> Focus Selected
+            </button>
+            {!isIsolationActive ? (
+              <button className="btn outline" style={{ width: '100%', fontSize: 11, marginTop: 4 }}
+                onClick={isolateSelectedObject} disabled={!selectedObjectId}>
+                <EyeOff size={11}/> Isolate Selected
+              </button>
+            ) : (
+              <button className="btn outline" style={{ width: '100%', fontSize: 11, marginTop: 4 }}
+                onClick={clearIsolation}>
+                <Eye size={11}/> Show All
+              </button>
+            )}
             <div className="divider" style={{ margin: '6px 0' }}/>
             <button className="btn outline" style={{ width: '100%', fontSize: 11 }} onClick={handleImportGLTF}>
               <Download size={11}/> Import glTF
