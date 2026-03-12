@@ -6274,7 +6274,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     if (e.key === 'Tab') {
       if (cmdSuggestions.length === 0) return;
       e.preventDefault();
-      setCmdText(cmdSuggestions[cmdSuggestIndex] || cmdSuggestions[0]);
+      setCmdText(cmdSuggestions[cmdSuggestIndex]?.command || cmdSuggestions[0].command);
       return;
     }
     if (e.key !== 'Enter' || !cmdText.trim()) return;
@@ -6676,22 +6676,82 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   }, []);
 
   const commandCatalog = useMemo(() => {
-    const toolCommands = TOOL_GROUPS.flatMap(group =>
-      group.tools.flatMap(tool => [tool.id, tool.label.toLowerCase()])
-    );
-    const coreCommands = [
-      'line', 'circle', 'rectangle', 'polyline', 'wall', 'door', 'window', 'stair',
-      'move', 'copy', 'rotate', 'trim', 'extend', 'offset', 'undo', 'redo', 'erase',
-      'help', 'fit', 'zoom', 'regen', 'count', 'qselect', 'chprop', 'color',
+    const entries = new Map<string, { command: string; aliases: Set<string> }>();
+    const addEntry = (command: string, aliases: string[] = []) => {
+      const normalized = command.toLowerCase().trim();
+      if (!normalized) return;
+      if (!entries.has(normalized)) {
+        entries.set(normalized, { command: normalized, aliases: new Set<string>() });
+      }
+      const row = entries.get(normalized)!;
+      aliases.forEach(alias => {
+        const a = alias.toLowerCase().trim();
+        if (a && a !== normalized) row.aliases.add(a);
+      });
+    };
+
+    TOOL_GROUPS.forEach(group => {
+      group.tools.forEach(tool => {
+        const labelAsCmd = tool.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        addEntry(tool.id, [labelAsCmd, tool.label.toLowerCase().replace(/\s+/g, '')]);
+      });
+    });
+
+    const commonAliases: Array<[string, string[]]> = [
+      ['line', ['l']], ['circle', ['c']], ['rectangle', ['rect', 'rec']], ['polyline', ['pl']],
+      ['wall', ['w']], ['door', ['dr']], ['window', ['win', 'wn']], ['stair', ['st']],
+      ['move', ['m']], ['copy', ['co']], ['rotate', ['ro']], ['trim', ['tr']],
+      ['extend', ['ex']], ['offset', ['o']], ['explode', ['x']],
+      ['undo', ['u']], ['redo', []], ['erase', ['e']], ['help', ['?']],
+      ['zoom_extents', ['ze', 'zoom', 'fit']], ['qselect', ['qs']], ['count', []],
+      ['chprop', ['properties']], ['regen', []], ['color', []],
     ];
-    return Array.from(new Set([...toolCommands, ...coreCommands]));
+    commonAliases.forEach(([command, aliases]) => addEntry(command, aliases));
+
+    return Array.from(entries.values()).map(v => ({
+      command: v.command,
+      aliases: Array.from(v.aliases),
+    }));
+  }, []);
+
+  const fuzzyScore = useCallback((query: string, candidate: string, aliases: string[]) => {
+    if (!query) return 0;
+    const q = query.toLowerCase();
+    const c = candidate.toLowerCase();
+    const aliasHit = aliases.find(a => a.toLowerCase() === q);
+    if (c === q) return 1100;
+    if (aliasHit) return 1050;
+    if (c.startsWith(q)) return 900 - (c.length - q.length);
+
+    const aliasPrefix = aliases.find(a => a.toLowerCase().startsWith(q));
+    if (aliasPrefix) return 860 - (aliasPrefix.length - q.length);
+
+    const idx = c.indexOf(q);
+    if (idx >= 0) return 760 - idx * 5;
+
+    const aliasContains = aliases.find(a => a.toLowerCase().includes(q));
+    if (aliasContains) return 700 - aliasContains.indexOf(q) * 5;
+
+    let qi = 0;
+    for (let i = 0; i < c.length && qi < q.length; i += 1) {
+      if (c[i] === q[qi]) qi += 1;
+    }
+    if (qi === q.length) return 520 - (c.length - q.length);
+    return 0;
   }, []);
 
   const cmdSuggestions = useMemo(() => {
     const q = cmdText.trim().toLowerCase();
     if (!q) return [];
-    return commandCatalog.filter(cmd => cmd.includes(q)).slice(0, 6);
-  }, [cmdText, commandCatalog]);
+    return commandCatalog
+      .map(entry => ({
+        ...entry,
+        score: fuzzyScore(q, entry.command, entry.aliases),
+      }))
+      .filter(entry => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.command.localeCompare(b.command))
+      .slice(0, 6);
+  }, [cmdText, commandCatalog, fuzzyScore]);
 
   const toolSearchQuery = toolSearch.trim().toLowerCase();
   const filteredToolGroups = toolSearchQuery
@@ -7176,13 +7236,16 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
               <div className="cmd-suggestions">
                 {cmdSuggestions.map((suggestion, index) => (
                   <button
-                    key={suggestion}
+                    key={suggestion.command}
                     type="button"
                     className={`cmd-suggestion${index === cmdSuggestIndex ? ' active' : ''}`}
                     onMouseEnter={() => setCmdSuggestIndex(index)}
-                    onClick={() => setCmdText(suggestion)}
+                    onClick={() => setCmdText(suggestion.command)}
                   >
-                    {suggestion}
+                    <span>{suggestion.command}</span>
+                    {suggestion.aliases.slice(0, 2).map(alias => (
+                      <span key={alias} className="cmd-suggestion-alias">{alias}</span>
+                    ))}
                   </button>
                 ))}
               </div>

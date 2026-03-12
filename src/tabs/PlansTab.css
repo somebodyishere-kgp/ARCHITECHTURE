@@ -183,12 +183,23 @@
   padding: 2px 6px;
   border-radius: 3px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .cmd-suggestion.active,
 .cmd-suggestion:hover {
   border-color: var(--accent);
   color: var(--accent);
   background: rgba(88,166,255,0.12);
+}
+.cmd-suggestion-alias {
+  font-size: 8px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  padding: 0 3px;
+  line-height: 1.2;
 }
 
 /* Status Right */

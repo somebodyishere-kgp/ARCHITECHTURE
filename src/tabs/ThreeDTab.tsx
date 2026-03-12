@@ -159,6 +159,38 @@ interface SectionPreset {
   height: number;
 }
 
+interface SectionSetPreset {
+  id: string;
+  name: string;
+  heights: number[];
+}
+
+interface ElevationPreset {
+  id: string;
+  name: string;
+  direction: 'front' | 'back' | 'left' | 'right';
+}
+
+interface WorldPreset {
+  id: string;
+  name: string;
+  renderMode: 'solid' | 'wireframe' | 'clay' | 'realistic' | 'xray';
+  renderQuality: RenderQuality;
+  sunPosition: { azimuth: number; altitude: number };
+  useGeoSun: boolean;
+  geoSunParams: { latitude: number; longitude: number; dayOfYear: number; hour: number };
+  toggles: {
+    showGrid: boolean;
+    showAxes: boolean;
+    showShadows: boolean;
+    enableSSAO: boolean;
+    enableSSR: boolean;
+    enableTAA: boolean;
+    enableCSM: boolean;
+    enableSky: boolean;
+  };
+}
+
 type QuickAssetKind =
   | 'chair'
   | 'desk'
@@ -227,11 +259,21 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [showSectionPlane, setShowSectionPlane] = useState(false);
   const [isIsolationActive, setIsIsolationActive] = useState(false);
   const [sectionHeight, setSectionHeight] = useState(1.2); // meters
+  const [activeSectionHeights, setActiveSectionHeights] = useState<number[]>([]);
   const [sectionPresets, setSectionPresets] = useState<SectionPreset[]>([]);
   const [newSectionPresetName, setNewSectionPresetName] = useState('');
+  const [sectionSetPresets, setSectionSetPresets] = useState<SectionSetPreset[]>([]);
+  const [newSectionSetName, setNewSectionSetName] = useState('');
+  const [sectionSetCount, setSectionSetCount] = useState(3);
+  const [sectionSetSpacing, setSectionSetSpacing] = useState(0.6);
+  const [elevationPresets, setElevationPresets] = useState<ElevationPreset[]>([]);
+  const [newElevationPresetName, setNewElevationPresetName] = useState('');
+  const [newElevationDirection, setNewElevationDirection] = useState<'front' | 'back' | 'left' | 'right'>('front');
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>([]);
   const [newPresetName, setNewPresetName] = useState('');
+  const [worldPresets, setWorldPresets] = useState<WorldPreset[]>([]);
+  const [newWorldPresetName, setNewWorldPresetName] = useState('');
   const [visibleCategories, setVisibleCategories] = useState({
     walls: true, slabs: true, roofs: true, columns: true, beams: true,
     stairs: true, doors: true, windows: true, furniture: true, mep: true,
@@ -701,15 +743,16 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     const r = rendererRef.current;
     if (!r) return;
     if (showSectionPlane) {
-      const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), sectionHeight);
-      sectionClipRef.current = plane;
-      r.clippingPlanes = [plane];
+      const heights = activeSectionHeights.length > 0 ? activeSectionHeights : [sectionHeight];
+      const planes = heights.map(h => new THREE.Plane(new THREE.Vector3(0, -1, 0), h));
+      sectionClipRef.current = planes[0] || null;
+      r.clippingPlanes = planes;
       r.localClippingEnabled = true;
     } else {
       sectionClipRef.current = null;
       r.clippingPlanes = [];
     }
-  }, [showSectionPlane, sectionHeight]);
+  }, [showSectionPlane, sectionHeight, activeSectionHeights]);
 
   // ─── Camera controls ──────────────────────────────────────────────
   const updateCamera = useCallback(() => {
@@ -834,6 +877,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   const applySectionPreset = useCallback((preset: SectionPreset) => {
     setShowSectionPlane(true);
+    setActiveSectionHeights([]);
     setSectionHeight(preset.height);
     onStatusChange(`Applied section preset: ${preset.name}`);
   }, [onStatusChange]);
@@ -841,6 +885,146 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const removeSectionPreset = useCallback((id: string) => {
     setSectionPresets(prev => prev.filter(p => p.id !== id));
   }, []);
+
+  const saveSectionSetPreset = useCallback(() => {
+    const count = Math.max(2, Math.min(10, sectionSetCount));
+    const spacing = Math.max(0.2, Math.min(3, sectionSetSpacing));
+    const heights = Array.from({ length: count }, (_, i) => sectionHeight + i * spacing);
+    const name = newSectionSetName.trim() || `Stack ${sectionSetPresets.length + 1}`;
+    const preset: SectionSetPreset = {
+      id: `section_set_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      heights,
+    };
+    setSectionSetPresets(prev => [...prev.slice(-5), preset]);
+    setNewSectionSetName('');
+    onStatusChange(`Saved section set: ${name}`);
+  }, [newSectionSetName, onStatusChange, sectionHeight, sectionSetCount, sectionSetPresets.length, sectionSetSpacing]);
+
+  const applySectionSetPreset = useCallback((preset: SectionSetPreset) => {
+    setShowSectionPlane(true);
+    setActiveSectionHeights(preset.heights);
+    if (preset.heights[0] !== undefined) setSectionHeight(preset.heights[0]);
+    onStatusChange(`Applied section set: ${preset.name}`);
+  }, [onStatusChange]);
+
+  const clearSectionSetPreset = useCallback(() => {
+    setActiveSectionHeights([]);
+    onStatusChange('Returned to single section plane mode.');
+  }, [onStatusChange]);
+
+  const removeSectionSetPreset = useCallback((id: string) => {
+    setSectionSetPresets(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const saveElevationPreset = useCallback(() => {
+    const name = newElevationPresetName.trim() || `Elevation ${elevationPresets.length + 1}`;
+    const preset: ElevationPreset = {
+      id: `elevation_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      direction: newElevationDirection,
+    };
+    setElevationPresets(prev => [...prev.slice(-7), preset]);
+    setNewElevationPresetName('');
+    onStatusChange(`Saved elevation preset: ${name}`);
+  }, [elevationPresets.length, newElevationDirection, newElevationPresetName, onStatusChange]);
+
+  const applyElevationPreset = useCallback((preset: ElevationPreset) => {
+    setView(preset.direction);
+    onStatusChange(`Applied elevation preset: ${preset.name}`);
+  }, [onStatusChange, setView]);
+
+  const removeElevationPreset = useCallback((id: string) => {
+    setElevationPresets(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const saveWorldPreset = useCallback(() => {
+    const name = newWorldPresetName.trim() || `World ${worldPresets.length + 1}`;
+    const preset: WorldPreset = {
+      id: `world_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      renderMode,
+      renderQuality,
+      sunPosition,
+      useGeoSun,
+      geoSunParams,
+      toggles: {
+        showGrid,
+        showAxes,
+        showShadows,
+        enableSSAO,
+        enableSSR,
+        enableTAA,
+        enableCSM,
+        enableSky,
+      },
+    };
+    setWorldPresets(prev => [...prev.slice(-5), preset]);
+    setNewWorldPresetName('');
+    onStatusChange(`Saved world preset: ${name}`);
+  }, [newWorldPresetName, worldPresets.length, renderMode, renderQuality, sunPosition, useGeoSun, geoSunParams, showGrid, showAxes, showShadows, enableSSAO, enableSSR, enableTAA, enableCSM, enableSky, onStatusChange]);
+
+  const applyWorldPreset = useCallback((preset: WorldPreset) => {
+    setRenderMode(preset.renderMode);
+    setRenderQuality(preset.renderQuality);
+    setSunPosition(preset.sunPosition);
+    setUseGeoSun(preset.useGeoSun);
+    setGeoSunParams(preset.geoSunParams);
+    setShowGrid(preset.toggles.showGrid);
+    setShowAxes(preset.toggles.showAxes);
+    setShowShadows(preset.toggles.showShadows);
+    setEnableSSAO(preset.toggles.enableSSAO);
+    setEnableSSR(preset.toggles.enableSSR);
+    setEnableTAA(preset.toggles.enableTAA);
+    setEnableCSM(preset.toggles.enableCSM);
+    setEnableSky(preset.toggles.enableSky);
+    onStatusChange(`Applied world preset: ${preset.name}`);
+  }, [onStatusChange]);
+
+  const removeWorldPreset = useCallback((id: string) => {
+    setWorldPresets(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const sharePresetBundle = useCallback(async () => {
+    const payload = {
+      version: 1,
+      viewPresets,
+      sectionPresets,
+      sectionSetPresets,
+      elevationPresets,
+      worldPresets,
+    };
+    const text = JSON.stringify(payload);
+    try {
+      await navigator.clipboard.writeText(text);
+      onStatusChange('3D preset bundle copied to clipboard.');
+    } catch {
+      window.prompt('Copy shared preset JSON:', text);
+      onStatusChange('Preset bundle ready to share.');
+    }
+  }, [elevationPresets, onStatusChange, sectionPresets, sectionSetPresets, viewPresets, worldPresets]);
+
+  const importPresetBundle = useCallback(() => {
+    const raw = window.prompt('Paste shared preset JSON');
+    if (!raw) return;
+    try {
+      const payload = JSON.parse(raw) as {
+        viewPresets?: ViewPreset[];
+        sectionPresets?: SectionPreset[];
+        sectionSetPresets?: SectionSetPreset[];
+        elevationPresets?: ElevationPreset[];
+        worldPresets?: WorldPreset[];
+      };
+      if (Array.isArray(payload.viewPresets)) setViewPresets(payload.viewPresets.slice(-8));
+      if (Array.isArray(payload.sectionPresets)) setSectionPresets(payload.sectionPresets.slice(-6));
+      if (Array.isArray(payload.sectionSetPresets)) setSectionSetPresets(payload.sectionSetPresets.slice(-6));
+      if (Array.isArray(payload.elevationPresets)) setElevationPresets(payload.elevationPresets.slice(-8));
+      if (Array.isArray(payload.worldPresets)) setWorldPresets(payload.worldPresets.slice(-6));
+      onStatusChange('Imported shared 3D presets.');
+    } catch {
+      onStatusChange('Invalid preset JSON.');
+    }
+  }, [onStatusChange]);
 
   const insertQuickAsset = useCallback((kind: QuickAssetKind) => {
     const anchor = orbitTarget.current;
@@ -3450,6 +3634,11 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                      onChange={e => setSectionHeight(parseFloat(e.target.value))}
                      style={{ width: '100%' }} />
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>{sectionHeight.toFixed(1)}m</div>
+              {activeSectionHeights.length > 0 && (
+                <div style={{ fontSize: 10, color: 'var(--accent)', textAlign: 'center', marginTop: 2 }}>
+                  Stacked cuts: {activeSectionHeights.map(h => `${h.toFixed(1)}m`).join(', ')}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
                 <input
                   value={newSectionPresetName}
@@ -3476,6 +3665,59 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                     </div>
                   ))}
                 </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginTop: 6 }}>
+                <input
+                  type="number"
+                  value={sectionSetCount}
+                  min={2}
+                  max={10}
+                  onChange={e => setSectionSetCount(parseInt(e.target.value || '2', 10))}
+                  title="Planes"
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                />
+                <input
+                  type="number"
+                  value={sectionSetSpacing}
+                  min={0.2}
+                  max={3}
+                  step={0.1}
+                  onChange={e => setSectionSetSpacing(parseFloat(e.target.value || '0.6'))}
+                  title="Spacing (m)"
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                <input
+                  value={newSectionSetName}
+                  onChange={e => setNewSectionSetName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveSectionSetPreset(); }}
+                  placeholder="Save section set"
+                  style={{ flex: 1, minWidth: 0, fontSize: 10, padding: '2px 6px' }}
+                />
+                <button className="btn" style={{ fontSize: 10, padding: '2px 6px' }} onClick={saveSectionSetPreset}>
+                  <Plus size={10}/> Stack
+                </button>
+              </div>
+              {sectionSetPresets.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
+                  {sectionSetPresets.map(preset => (
+                    <div key={preset.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <button className="btn ghost" style={{ flex: 1, fontSize: 10, padding: '2px 6px', justifyContent: 'space-between' }} onClick={() => applySectionSetPreset(preset)}>
+                        <span>{preset.name}</span>
+                        <span>{preset.heights.length} cuts</span>
+                      </button>
+                      <button className="btn ghost icon-only" style={{ padding: 2 }} onClick={() => removeSectionSetPreset(preset.id)}>
+                        <Trash2 size={10}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeSectionHeights.length > 0 && (
+                <button className="btn ghost" style={{ width: '100%', fontSize: 10, marginTop: 4 }} onClick={clearSectionSetPreset}>
+                  Back to Single Plane
+                </button>
               )}
             </div>
           )}
@@ -3543,7 +3785,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
             <span>Use Native Rust Mesher</span>
           </label>
           <div style={{ padding: '4px 12px' }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>Saved Views</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>Camera Angle Presets</div>
             <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
               <input
                 value={newPresetName}
@@ -3559,6 +3801,55 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                 <button className="btn ghost" style={{ fontSize: 10, color: '#ff6b6b', padding: '4px 6px' }} onClick={() => deleteViewPreset(p.id)}>x</button>
               </div>
             ))}
+
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8, marginBottom: 4 }}>Elevation Presets</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginBottom: 4 }}>
+              <input
+                value={newElevationPresetName}
+                onChange={e => setNewElevationPresetName(e.target.value)}
+                placeholder="Name"
+                style={{ fontSize: 10 }}
+              />
+              <select
+                value={newElevationDirection}
+                onChange={e => setNewElevationDirection(e.target.value as 'front' | 'back' | 'left' | 'right')}
+                style={{ fontSize: 10 }}
+              >
+                <option value="front">Front</option>
+                <option value="back">Back</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+              </select>
+            </div>
+            <button className="btn ghost" style={{ width: '100%', fontSize: 10, marginBottom: 4 }} onClick={saveElevationPreset}>Save Elevation Preset</button>
+            {elevationPresets.slice(-4).map(p => (
+              <div key={p.id} style={{ display: 'flex', gap: 4, marginBottom: 3 }}>
+                <button className="btn ghost" style={{ fontSize: 10, flex: 1, textAlign: 'left' }} onClick={() => applyElevationPreset(p)}>{p.name} ({p.direction})</button>
+                <button className="btn ghost" style={{ fontSize: 10, color: '#ff6b6b', padding: '4px 6px' }} onClick={() => removeElevationPreset(p.id)}>x</button>
+              </div>
+            ))}
+
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8, marginBottom: 4 }}>3D World Presets</div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+              <input
+                value={newWorldPresetName}
+                onChange={e => setNewWorldPresetName(e.target.value)}
+                placeholder="World preset"
+                style={{ flex: 1, fontSize: 10 }}
+              />
+              <button className="btn ghost" style={{ fontSize: 10, padding: '4px 6px' }} onClick={saveWorldPreset}>Save</button>
+            </div>
+            {worldPresets.slice(-4).map(p => (
+              <div key={p.id} style={{ display: 'flex', gap: 4, marginBottom: 3 }}>
+                <button className="btn ghost" style={{ fontSize: 10, flex: 1, textAlign: 'left' }} onClick={() => applyWorldPreset(p)}>{p.name}</button>
+                <button className="btn ghost" style={{ fontSize: 10, color: '#ff6b6b', padding: '4px 6px' }} onClick={() => removeWorldPreset(p.id)}>x</button>
+              </div>
+            ))}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginTop: 6 }}>
+              <button className="btn ghost" style={{ fontSize: 10 }} onClick={sharePresetBundle}>Share Presets</button>
+              <button className="btn ghost" style={{ fontSize: 10 }} onClick={importPresetBundle}>Import Presets</button>
+            </div>
           </div>
         </div>
       </div>

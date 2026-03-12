@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { FileText, Download, Table, BarChart2, BookOpen, MapPin, AlertTriangle, Plus, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
 import { ADFProject, WallEntity, AnyEntity, Sheet, Viewport, TitleBlock, PAPER_SIZES, uid } from '../lib/adf';
 import './DocsTab.css';
@@ -182,6 +183,66 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportSheetRevisionsCsv = () => {
+    if (!selectedSheet) return;
+    downloadCsv(
+      `${selectedSheet.titleBlock.sheetNumber || selectedSheet.name}_revisions.csv`,
+      ['Sheet', 'Revision', 'Date', 'Author', 'Note'],
+      sheetRevisions.map(rev => [
+        selectedSheet.titleBlock.sheetNumber || selectedSheet.name,
+        (rev as any).revision || selectedSheet.titleBlock.revision,
+        (rev as any).date || '',
+        (rev as any).author || '',
+        (rev as any).note || '',
+      ])
+    );
+  };
+
+  const exportSheetRevisionsPdf = async () => {
+    if (!selectedSheet) return;
+    try {
+      const pdf = await PDFDocument.create();
+      const font = await pdf.embedFont(StandardFonts.Helvetica);
+      let page = pdf.addPage([595, 842]);
+      const margin = 40;
+      const lineHeight = 16;
+      let y = 800;
+
+      const drawLine = (text: string, size = 10, color = rgb(0.1, 0.1, 0.1)) => {
+        page.drawText(text, { x: margin, y, size, font, color });
+        y -= lineHeight;
+      };
+
+      drawLine(`Revision History - ${selectedSheet.name}`, 14, rgb(0.05, 0.05, 0.05));
+      drawLine(`Sheet No: ${selectedSheet.titleBlock.sheetNumber}    Current Rev: ${selectedSheet.titleBlock.revision}`, 10, rgb(0.2, 0.2, 0.2));
+      drawLine(`Generated: ${new Date().toLocaleString()}`, 10, rgb(0.2, 0.2, 0.2));
+      y -= 4;
+      drawLine('Date        Rev   Author        Note', 10, rgb(0.05, 0.05, 0.05));
+      drawLine('--------------------------------------------------------------', 10, rgb(0.35, 0.35, 0.35));
+
+      sheetRevisions.forEach(rev => {
+        if (y < 60) {
+          page = pdf.addPage([595, 842]);
+          y = 800;
+        }
+        const row = `${String((rev as any).date || '').padEnd(10)}  ${String((rev as any).revision || '').padEnd(4)}  ${String((rev as any).author || '').padEnd(12)}  ${String((rev as any).note || '')}`;
+        drawLine(row.slice(0, 95));
+      });
+
+      const bytes = await pdf.save();
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${selectedSheet.titleBlock.sheetNumber || selectedSheet.name}_revisions.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      onStatusChange('Revision history PDF exported.');
+    } catch (err) {
+      onStatusChange(`Revision PDF export failed: ${err}`);
+    }
   };
 
   const addViewportToSheet = (sheetId: string, floorIdx: number) => {
@@ -423,7 +484,15 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                   <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                       <span style={{ fontSize: 11, fontWeight: 600 }}>Revision Log</span>
-                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sheetRevisions.length} entries</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sheetRevisions.length} entries</span>
+                        <button className="btn ghost" style={{ fontSize: 10, padding: '2px 6px' }} onClick={exportSheetRevisionsCsv}>
+                          <Download size={10}/> CSV
+                        </button>
+                        <button className="btn ghost" style={{ fontSize: 10, padding: '2px 6px' }} onClick={exportSheetRevisionsPdf}>
+                          <Download size={10}/> PDF
+                        </button>
+                      </div>
                     </div>
                     <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                       <input
