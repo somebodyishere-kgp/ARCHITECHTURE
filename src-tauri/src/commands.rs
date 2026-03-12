@@ -110,13 +110,33 @@ pub async fn export_dxf(path: String, floor_data: serde_json::Value) -> Result<S
     }
 }
 
-/// Generate a floor plan via AI (calls Python bridge)
+/// Parse a text prompt and generate a 2D floor plan layout leveraging an AI bridge.
 #[tauri::command]
-pub async fn generate_floor_plan_ai(prompt: String, api_key: Option<String>) -> Result<serde_json::Value, String> {
-    // For now return a sample layout so the app is functional without an API key
-    // In production, this shells out to ai/floor_plan_agent.py
-    let sample_layout = generate_sample_layout(&prompt);
-    Ok(sample_layout)
+pub async fn generate_floor_plan_ai(prompt: String, api_key: Option<String>, constraints: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "generate_floor_plan",
+        "prompt": prompt,
+        "api_key": api_key,
+        "constraints": constraints.unwrap_or_else(|| serde_json::json!({}))
+    });
+
+    // We reuse the freecad bridge structure, but we'll create a dedicated ai_bridge.py soon. 
+    // For now, let's route this to a mock generator in python.
+    let response = run_bridge("ai_bridge.py", payload)?;
+    Ok(response)
+}
+
+/// Perform geometric computational operations via Python Shapely
+#[tauri::command]
+pub async fn perform_geom_op(op: String, entities: Vec<serde_json::Value>, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "op": op,
+        "entities": entities,
+        "params": params
+    });
+
+    let response = run_bridge("geom_bridge.py", payload)?;
+    Ok(response)
 }
 
 fn generate_sample_layout(prompt: &str) -> serde_json::Value {
@@ -403,4 +423,179 @@ pub async fn convert_to_3d(floor_data: serde_json::Value) -> Result<serde_json::
         },
         "camera": {"position": [10.0, 8.0, 10.0], "target": [0.0, 1.5, 0.0]}
     }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  IFC (Industry Foundation Classes) via IFCOpenShell bridge
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Import an IFC file and convert to ADF entities
+#[tauri::command]
+pub async fn import_ifc(file_path: String) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "import_ifc",
+        "file_path": file_path,
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("IFC import failed").to_string())
+    }
+}
+
+/// Export ADF floor data to IFC
+#[tauri::command]
+pub async fn export_ifc(output_path: String, floor_data: serde_json::Value, schema: Option<String>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "export_ifc",
+        "floor_data": floor_data,
+        "output_path": output_path,
+        "schema": schema.unwrap_or_else(|| "IFC4".to_string()),
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("IFC export failed").to_string())
+    }
+}
+
+/// Validate an IFC file for compliance
+#[tauri::command]
+pub async fn validate_ifc(file_path: String) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "validate_ifc",
+        "file_path": file_path,
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("IFC validation failed").to_string())
+    }
+}
+
+/// Perform quantity takeoff from an IFC model
+#[tauri::command]
+pub async fn ifc_quantity_takeoff(file_path: String, element_types: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "quantity_takeoff",
+        "file_path": file_path,
+        "element_types": element_types,
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("Quantity takeoff failed").to_string())
+    }
+}
+
+/// Query IFC spatial structure  
+#[tauri::command]
+pub async fn ifc_spatial_query(file_path: String, query_type: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "spatial_query",
+        "file_path": file_path,
+        "query_type": query_type,
+        "params": params.unwrap_or_else(|| serde_json::json!({})),
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("Spatial query failed").to_string())
+    }
+}
+
+/// Compare two IFC files for differences
+#[tauri::command]
+pub async fn ifc_diff(file_a: String, file_b: String) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "diff_ifc",
+        "file_a": file_a,
+        "file_b": file_b,
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("IFC diff failed").to_string())
+    }
+}
+
+/// Clash detection between element types in an IFC model
+#[tauri::command]
+pub async fn ifc_clash_detection(file_path: String, type_a: Option<String>, type_b: Option<String>, tolerance: Option<f64>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "clash_detection",
+        "file_path": file_path,
+        "type_a": type_a.unwrap_or_else(|| "IfcWall".to_string()),
+        "type_b": type_b.unwrap_or_else(|| "IfcPipeSegment".to_string()),
+        "tolerance": tolerance.unwrap_or(0.0),
+    });
+    let res = run_bridge("ifcopenshell_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("Clash detection failed").to_string())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SVG Export
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Export 2D floor plan as SVG
+#[tauri::command]
+pub async fn export_svg(output_path: String, floor_data: serde_json::Value) -> Result<String, String> {
+    let payload = serde_json::json!({
+        "action": "export_svg",
+        "floor_data": floor_data,
+        "output_path": output_path,
+    });
+    let res = run_bridge("librecad_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(format!("Exported SVG to {}", output_path))
+    } else {
+        Err(res["error"].as_str().unwrap_or("SVG export failed").to_string())
+    }
+}
+
+/// Import DXF file and convert to ADF entities
+#[tauri::command]
+pub async fn import_dxf(file_path: String) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "action": "import_dxf",
+        "file_path": file_path,
+    });
+    let res = run_bridge("librecad_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("DXF import failed").to_string())
+    }
+}
+
+/// Export floor plan to PDF
+#[tauri::command]
+pub async fn export_pdf(floor: serde_json::Value, out_path: String, paper_size: Option<String>, orientation: Option<String>, title: Option<String>, scale: Option<String>) -> Result<serde_json::Value, String> {
+    let payload = serde_json::json!({
+        "command": "export_pdf",
+        "params": {
+            "floor": floor,
+            "outPath": out_path,
+            "paperSize": paper_size.unwrap_or_else(|| "A3".to_string()),
+            "orientation": orientation.unwrap_or_else(|| "landscape".to_string()),
+            "title": title.unwrap_or_else(|| "ArchFlow Drawing".to_string()),
+            "scale": scale.unwrap_or_else(|| "1:100".to_string()),
+        }
+    });
+    let res = run_bridge("pdf_bridge.py", payload)?;
+    if res["ok"].as_bool().unwrap_or(false) {
+        Ok(res)
+    } else {
+        Err(res["error"].as_str().unwrap_or("PDF export failed").to_string())
+    }
 }

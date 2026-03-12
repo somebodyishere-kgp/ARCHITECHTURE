@@ -1,5 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, FolderOpen, Save, FilePlus, Settings, HelpCircle, ChevronDown } from 'lucide-react';
 import { ADFProject, createProject } from './lib/adf';
 import PlansTab from './tabs/PlansTab';
@@ -43,12 +44,52 @@ export default function App() {
   const handleSave = async () => {
     try {
       setStatusMsg('Saving…');
-      // In Tauri: use dialog to pick path
-      const path = `${project.projectName.replace(/\s+/g, '_')}.adf.json`;
-      await invoke('save_project', { path, data: project });
-      setStatusMsg(`Saved to ${path}`);
+      const filePath = await save({ filters: [{ name: 'ADF Project', extensions: ['adf.json'] }], defaultPath: `${project.projectName}.adf.json` });
+      if (!filePath) return;
+      await invoke('save_project', { path: filePath, data: project });
+      setStatusMsg(`Saved to ${filePath}`);
     } catch (err) {
       setStatusMsg(`Error saving: ${err}`);
+    }
+  };
+
+  const handleOpen = async () => {
+    try {
+      const filePath = await open({ filters: [{ name: 'ADF Project', extensions: ['adf.json', 'json'] }] });
+      if (!filePath) return;
+      setStatusMsg('Opening project…');
+      const result = await invoke<ADFProject>('load_project', { path: filePath });
+      if (result) {
+        setProject(result);
+        setActiveFloorIndex(0);
+        setStatusMsg(`Opened: ${(result as any).projectName || 'project'}`);
+      }
+    } catch (err) {
+      setStatusMsg(`Open failed: ${err}`);
+    }
+  };
+
+  const handleExportDXF = async () => {
+    try {
+      const filePath = await save({ filters: [{ name: 'DXF', extensions: ['dxf'] }], defaultPath: `${project.projectName}.dxf` });
+      if (!filePath) return;
+      setStatusMsg('Exporting DXF…');
+      await invoke('export_dxf', { path: filePath, floorData: activeFloor });
+      setStatusMsg(`DXF exported to ${filePath}`);
+    } catch (err) {
+      setStatusMsg(`DXF export: ${err}`);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    try {
+      const filePath = await save({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: `${project.projectName}.pdf` });
+      if (!filePath) return;
+      setStatusMsg('Exporting PDF…');
+      await invoke('export_pdf', { floor: activeFloor, outPath: filePath });
+      setStatusMsg(`PDF exported to ${filePath}`);
+    } catch (err) {
+      setStatusMsg(`PDF export: ${err}`);
     }
   };
 
@@ -98,8 +139,21 @@ export default function App() {
             <MenuDropdown key={menu.label} label={menu.label} items={menu.items}
               onSelect={(item) => {
                 if (item === 'New Project') handleNewProject();
-                if (item === 'Save') handleSave();
-                if (item === 'Toggle AI Panel') setShowAI(v => !v);
+                else if (item === 'Open…') handleOpen();
+                else if (item === 'Save') handleSave();
+                else if (item === 'Save As…') handleSave();
+                else if (item === 'Export DXF') handleExportDXF();
+                else if (item === 'Export PDF') handleExportPDF();
+                else if (item === 'Exit') invoke('plugin:window|close');
+                else if (item === 'Undo') window.dispatchEvent(new CustomEvent('archflow:undo'));
+                else if (item === 'Redo') window.dispatchEvent(new CustomEvent('archflow:redo'));
+                else if (item === 'Select All') window.dispatchEvent(new CustomEvent('archflow:selectall'));
+                else if (item === 'Delete Selected') window.dispatchEvent(new CustomEvent('archflow:delete'));
+                else if (item === 'Plans (1)') setActiveTab('plans');
+                else if (item === '3D / Render (2)') setActiveTab('3d');
+                else if (item === 'Documentation (3)') setActiveTab('docs');
+                else if (item === 'Toggle AI Panel') setShowAI(v => !v);
+                else if (item === 'Zoom Fit') window.dispatchEvent(new CustomEvent('archflow:zoomfit'));
               }}
             />
           ))}
@@ -177,7 +231,14 @@ export default function App() {
             />
           </div>
           <div style={{ display: activeTab === '3d' ? 'flex' : 'none', width: '100%', height: '100%' }}>
-            <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg} />
+            <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
+              onEntityUpdate={(entities) => {
+                updateProject(p => {
+                  const floors = [...p.floors];
+                  floors[activeFloorIndex] = { ...floors[activeFloorIndex], entities };
+                  return { ...p, floors };
+                });
+              }} />
           </div>
           <div style={{ display: activeTab === 'docs' ? 'flex' : 'none', width: '100%', height: '100%' }}>
             <DocsTab project={project} onProjectChange={setProject} onStatusChange={setStatusMsg} />

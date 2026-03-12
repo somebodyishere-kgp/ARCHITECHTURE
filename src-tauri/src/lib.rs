@@ -13,9 +13,21 @@ pub fn run() {
             commands::save_project,
             commands::load_project,
             commands::export_dxf,
+            commands::import_dxf,
+            commands::export_svg,
             commands::generate_floor_plan_ai,
             commands::convert_to_3d,
             commands::get_building_codes,
+            commands::import_ifc,
+            commands::export_ifc,
+            commands::validate_ifc,
+            commands::ifc_quantity_takeoff,
+            commands::ifc_spatial_query,
+            commands::ifc_diff,
+            commands::ifc_clash_detection,
+            commands::export_svg,
+            commands::import_dxf,
+            commands::export_pdf,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // @ts-nocheck
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 import { invoke } from '@tauri-apps/api/core';
-import { FileText, Download, Table, BarChart2, BookOpen, MapPin, AlertTriangle } from 'lucide-react';
-import { ADFProject, WallEntity, AnyEntity } from '../lib/adf';
+import { save } from '@tauri-apps/plugin-dialog';
+import { FileText, Download, Table, BarChart2, BookOpen, MapPin, AlertTriangle, Plus, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
+import { ADFProject, WallEntity, AnyEntity, Sheet, Viewport, TitleBlock, PAPER_SIZES, uid } from '../lib/adf';
 import './DocsTab.css';
 
 interface Props {
@@ -37,6 +38,9 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const [activeView, setActiveView] = useState<DocView>('sheets');
   const [buildingCodes, setBuildingCodes] = useState<Record<string, unknown> | null>(null);
   const [loadingCodes, setLoadingCodes] = useState(false);
+  const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
+  const [sheetZoom, setSheetZoom] = useState(0.5);
+  const sheetCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const allEntities = project.floors.flatMap(f => f.entities);
   const doors   = allEntities.filter(e => e.type === 'door');
@@ -44,6 +48,159 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const walls   = allEntities.filter(e => e.type === 'wall') as WallEntity[];
   const totalArea   = project.floors.reduce((s, f) => s + calcArea(f.entities), 0);
   const totalWallLen = calcWallLength(allEntities);
+
+  const selectedSheet = project.sheets.find(s => s.id === selectedSheetId) || null;
+
+  // ─── Sheet creation ────────────────────────────────────────────
+  const createSheet = (paperSize: string) => {
+    const ps = PAPER_SIZES[paperSize] || PAPER_SIZES['A3'];
+    const sheet: Sheet = {
+      id: uid(),
+      name: `Sheet ${project.sheets.length + 1} - ${paperSize}`,
+      titleBlock: {
+        template: paperSize,
+        width: ps.width,
+        height: ps.height,
+        projectName: project.projectName,
+        drawnBy: '',
+        checkedBy: '',
+        date: new Date().toISOString().split('T')[0],
+        revision: 'A',
+        sheetNumber: `S${String(project.sheets.length + 1).padStart(2, '0')}`,
+        sheetTitle: 'Plan View',
+        scale: '1:100',
+      },
+      viewports: [],
+      annotations: [],
+    };
+    onProjectChange({ ...project, sheets: [...project.sheets, sheet] });
+    setSelectedSheetId(sheet.id);
+    onStatusChange(`Created ${paperSize} sheet`);
+  };
+
+  const deleteSheet = (id: string) => {
+    onProjectChange({ ...project, sheets: project.sheets.filter(s => s.id !== id) });
+    if (selectedSheetId === id) setSelectedSheetId(null);
+  };
+
+  const addViewportToSheet = (sheetId: string, floorIdx: number) => {
+    const sh = project.sheets.find(s => s.id === sheetId);
+    if (!sh) return;
+    const vp: Viewport = {
+      id: uid(), x: 20, y: 20, width: sh.titleBlock.width - 60, height: sh.titleBlock.height - 60,
+      centerX: 0, centerY: 0, scale: 0.01, locked: false,
+    };
+    const updated = project.sheets.map(s => s.id === sheetId ? { ...s, viewports: [...s.viewports, vp] } : s);
+    onProjectChange({ ...project, sheets: updated });
+    onStatusChange('Viewport added');
+  };
+
+  // ─── Sheet canvas rendering ────────────────────────────────────
+  const renderSheet = useCallback(() => {
+    const cvs = sheetCanvasRef.current;
+    if (!cvs || !selectedSheet) return;
+    const ctx = cvs.getContext('2d');
+    if (!ctx) return;
+    const tb = selectedSheet.titleBlock;
+    const w = tb.width * sheetZoom, h = tb.height * sheetZoom;
+    cvs.width = w + 40;
+    cvs.height = h + 40;
+    ctx.fillStyle = '#2a2a2e';
+    ctx.fillRect(0, 0, cvs.width, cvs.height);
+    // Paper
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(20, 20, w, h);
+    // Border
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20, 20, w, h);
+    // Inner border (5mm margin)
+    const m = 5 * sheetZoom;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(20 + m, 20 + m, w - 2 * m, h - 2 * m);
+    // Title block (bottom-right, 180x40mm)
+    const tbW = 180 * sheetZoom, tbH = 40 * sheetZoom;
+    const tbX = 20 + w - m - tbW, tbY = 20 + h - m - tbH;
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tbX, tbY, tbW, tbH);
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(tbX, tbY, tbW, tbH);
+    // Title block text
+    ctx.fillStyle = '#000';
+    ctx.font = `bold ${10 * sheetZoom}px sans-serif`;
+    ctx.fillText(tb.projectName, tbX + 4 * sheetZoom, tbY + 12 * sheetZoom);
+    ctx.font = `${7 * sheetZoom}px sans-serif`;
+    ctx.fillText(`Sheet: ${tb.sheetNumber}`, tbX + 4 * sheetZoom, tbY + 22 * sheetZoom);
+    ctx.fillText(`${tb.sheetTitle} | ${tb.scale}`, tbX + 4 * sheetZoom, tbY + 30 * sheetZoom);
+    ctx.fillText(`Date: ${tb.date} | Rev: ${tb.revision}`, tbX + 4 * sheetZoom, tbY + 38 * sheetZoom);
+    // Viewports — draw entity previews
+    for (const vp of selectedSheet.viewports) {
+      const vpX = 20 + vp.x * sheetZoom, vpY = 20 + vp.y * sheetZoom;
+      const vpW = vp.width * sheetZoom, vpH = vp.height * sheetZoom;
+      ctx.strokeStyle = '#0066cc';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4, 2]);
+      ctx.strokeRect(vpX, vpY, vpW, vpH);
+      ctx.setLineDash([]);
+      // Draw entities in viewport
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(vpX, vpY, vpW, vpH);
+      ctx.clip();
+      const entities = allEntities;
+      if (entities.length > 0) {
+        // Find entity bounds
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const e of entities) {
+          if ('x1' in e && 'y1' in e && 'x2' in e && 'y2' in e) {
+            const en = e as any;
+            minX = Math.min(minX, en.x1, en.x2); minY = Math.min(minY, en.y1, en.y2);
+            maxX = Math.max(maxX, en.x1, en.x2); maxY = Math.max(maxY, en.y1, en.y2);
+          }
+        }
+        if (maxX > minX && maxY > minY) {
+          const scX = vpW / (maxX - minX), scY = vpH / (maxY - minY);
+          const sc = Math.min(scX, scY) * 0.9;
+          const ox = vpX + vpW / 2 - (minX + maxX) / 2 * sc;
+          const oy = vpY + vpH / 2 - (minY + maxY) / 2 * sc;
+          ctx.strokeStyle = '#333';
+          ctx.lineWidth = Math.max(0.5, 1 * sheetZoom);
+          for (const e of entities) {
+            if ('x1' in e && 'y1' in e && 'x2' in e && 'y2' in e) {
+              const en = e as any;
+              ctx.beginPath();
+              ctx.moveTo(ox + en.x1 * sc, oy + en.y1 * sc);
+              ctx.lineTo(ox + en.x2 * sc, oy + en.y2 * sc);
+              if (e.type === 'wall') { ctx.lineWidth = Math.max(1, 2 * sheetZoom); ctx.strokeStyle = '#000'; }
+              else { ctx.lineWidth = Math.max(0.5, 1 * sheetZoom); ctx.strokeStyle = '#555'; }
+              ctx.stroke();
+            }
+          }
+        }
+      }
+      ctx.restore();
+      // Viewport label
+      ctx.fillStyle = '#0066cc';
+      ctx.font = `${8 * sheetZoom}px sans-serif`;
+      ctx.fillText(`VP ${selectedSheet.viewports.indexOf(vp) + 1}`, vpX + 2, vpY + 10 * sheetZoom);
+    }
+  }, [selectedSheet, sheetZoom, allEntities]);
+
+  useEffect(() => { renderSheet(); }, [renderSheet]);
+
+  const handleExportSheetPDF = async () => {
+    if (!selectedSheet) return;
+    try {
+      const filePath = await save({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: `${selectedSheet.name}.pdf` });
+      if (!filePath) return;
+      onStatusChange('Exporting sheet PDF…');
+      await invoke('export_pdf', { floor: { entities: allEntities }, outPath: filePath, paperSize: selectedSheet.titleBlock.template, title: selectedSheet.titleBlock.sheetTitle });
+      onStatusChange(`Sheet exported to ${filePath}`);
+    } catch (err) {
+      onStatusChange(`PDF export: ${err}`);
+    }
+  };
 
   const fetchCodes = async () => {
     if (!project.location) { onStatusChange('Set project location first'); return; }
@@ -80,40 +237,60 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
       <div className="docs-content">
         {/* ─ Sheets ─ */}
         {activeView === 'sheets' && (
-          <div className="docs-section">
-            <div className="docs-section-header">
-              <h2>Drawing Sheets</h2>
-              <button className="btn primary" onClick={() => onStatusChange('Sheet creation coming soon!')}><FileText size={12}/> New Sheet</button>
+          <div className="docs-section" style={{ display: 'flex', gap: 12, height: '100%' }}>
+            {/* Sheet list sidebar */}
+            <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--border)', paddingRight: 12 }}>
+              <div className="docs-section-header" style={{ marginBottom: 8 }}>
+                <h2 style={{ fontSize: 13 }}>Sheets</h2>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                {['A4', 'A3', 'A2', 'A1', 'ARCH-D'].map(ps => (
+                  <button key={ps} className="btn" style={{ fontSize: 10, padding: '2px 6px' }} onClick={() => createSheet(ps)}>
+                    <Plus size={10}/> {ps}
+                  </button>
+                ))}
+              </div>
+              {project.sheets.map(s => (
+                <div key={s.id}
+                  className={`sheet-list-item${selectedSheetId === s.id ? ' active' : ''}`}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 8px', cursor: 'pointer', borderRadius: 4, marginBottom: 2, background: selectedSheetId === s.id ? 'var(--bg-active)' : 'transparent' }}
+                  onClick={() => setSelectedSheetId(s.id)}>
+                  <span style={{ fontSize: 11 }}>{s.name}</span>
+                  <button className="btn ghost icon-only" style={{ padding: 2 }} onClick={(e) => { e.stopPropagation(); deleteSheet(s.id); }}><Trash2 size={11}/></button>
+                </div>
+              ))}
+              {project.sheets.length === 0 && (
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, padding: 8, textAlign: 'center' }}>
+                  Click a paper size above to create your first sheet.
+                </div>
+              )}
             </div>
-            {project.sheets.length === 0 ? (
-              <div className="docs-empty">
-                <FileText size={32} color="var(--text-muted)"/>
-                <p>No sheets created yet.</p>
-                <p style={{ fontSize: 12 }}>Sheets are printable layouts containing plan views, sections, elevations, and title blocks.</p>
-                <button className="btn" onClick={() => onStatusChange('Sheet creation — coming in next phase!')}>+ Add Sheet</button>
-              </div>
-            ) : (
-              <div className="sheets-grid">
-                {project.sheets.map(s => <div key={s.id} className="sheet-card">{s.name}</div>)}
-              </div>
-            )}
-            <div className="docs-info-cards">
-              <div className="info-card">
-                <div className="info-card-label">Total Floors</div>
-                <div className="info-card-value">{project.floors.length}</div>
-              </div>
-              <div className="info-card">
-                <div className="info-card-label">Total Built Area</div>
-                <div className="info-card-value">{totalArea.toFixed(0)} m²</div>
-              </div>
-              <div className="info-card">
-                <div className="info-card-label">Total Wall Length</div>
-                <div className="info-card-value">{totalWallLen.toFixed(1)} m</div>
-              </div>
-              <div className="info-card">
-                <div className="info-card-label">Building Type</div>
-                <div className="info-card-value" style={{ textTransform: 'capitalize' }}>{project.buildingType || '—'}</div>
-              </div>
+            {/* Sheet preview */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              {selectedSheet ? (
+                <>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{selectedSheet.name}</span>
+                    <button className="btn" style={{ fontSize: 10 }} onClick={() => addViewportToSheet(selectedSheet.id, 0)}>
+                      <Plus size={10}/> Add Viewport
+                    </button>
+                    <button className="btn" onClick={handleExportSheetPDF}><Download size={10}/> Export PDF</button>
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <button className="btn ghost icon-only" onClick={() => setSheetZoom(z => Math.max(0.2, z - 0.1))}><ZoomOut size={12}/></button>
+                      <span style={{ fontSize: 10, minWidth: 40, textAlign: 'center' }}>{Math.round(sheetZoom * 100)}%</span>
+                      <button className="btn ghost icon-only" onClick={() => setSheetZoom(z => Math.min(2, z + 0.1))}><ZoomIn size={12}/></button>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, overflow: 'auto', background: '#2a2a2e', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <canvas ref={sheetCanvasRef} />
+                  </div>
+                </>
+              ) : (
+                <div className="docs-empty">
+                  <FileText size={32} color="var(--text-muted)"/>
+                  <p>Select or create a sheet to preview.</p>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -200,7 +377,15 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
           <div className="docs-section">
             <div className="docs-section-header">
               <h2>Bill of Quantities</h2>
-              <button className="btn" onClick={() => onStatusChange('PDF export coming soon!')}><Download size={12}/> Export PDF</button>
+              <button className="btn" onClick={async () => {
+                try {
+                  const filePath = await save({ filters: [{ name: 'PDF', extensions: ['pdf'] }], defaultPath: `${project.projectName}_BOQ.pdf` });
+                  if (!filePath) return;
+                  onStatusChange('Exporting BOQ PDF…');
+                  await invoke('export_pdf', { floor: { entities: allEntities }, outPath: filePath, title: 'Bill of Quantities' });
+                  onStatusChange(`BOQ exported to ${filePath}`);
+                } catch (err) { onStatusChange(`PDF export: ${err}`); }
+              }}><Download size={12}/> Export PDF</button>
             </div>
             <table className="schedule-table" style={{ width: '100%' }}>
               <thead>

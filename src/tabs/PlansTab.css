@@ -35,9 +35,10 @@
 /* ─── Canvas Container ─────────────────────────────────────────────────── */
 .canvas-container {
   flex: 1; position: relative; overflow: hidden;
+  display: flex; flex-direction: column;
 }
 .draft-canvas {
-  width: 100%; height: 100%; display: block;
+  flex: 1; width: 100%; display: block; position: relative;
 }
 
 /* ─── Tool Options Bar ─────────────────────────────────────────────────── */
@@ -51,76 +52,261 @@
 }
 
 .zoom-indicator {
-  position: absolute; bottom: 8px; left: 8px;
+  position: absolute; top: 8px; right: 8px;
   background: var(--bg-overlay); border: 1px solid var(--border);
   border-radius: 4px; padding: 2px 8px;
   font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary);
+  pointer-events: none;
 }
 
-.active-layer-chip {
-  position: absolute; bottom: 8px; right: 8px;
-  background: var(--bg-overlay); border: 1px solid var(--border);
-  border-radius: 4px; padding: 3px 8px;
+/* ─── Bottom Docked Bar (Status + Command + Snap) ──────────────────────── */
+.plans-bottom-bar {
+  display: flex; align-items: stretch;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  height: 60px; min-height: 60px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  z-index: 50;
+}
+
+/* Snap Toggles */
+.snap-toggles {
+  display: flex; align-items: center; gap: 1px;
+  padding: 0 6px; border-right: 1px solid var(--border);
+  overflow-x: auto; flex-shrink: 0;
+}
+.snap-btn {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 6px; border: none; border-radius: 3px;
+  background: transparent; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.05em; cursor: pointer;
+  transition: all 0.1s ease; white-space: nowrap;
+}
+.snap-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.snap-btn.on {
+  background: rgba(88,166,255,0.15); color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.snap-key {
+  font-size: 7px; color: var(--text-muted); margin-right: 2px;
+}
+.snap-divider {
+  width: 1px; height: 16px; background: var(--border); margin: 0 3px; flex-shrink: 0;
+}
+
+/* Command Bar Center */
+.cmd-bar-center {
+  flex: 1; display: flex; flex-direction: column;
+  justify-content: flex-end; padding: 2px 10px;
+  min-width: 0; border-right: 1px solid var(--border);
+}
+.cmd-bar-active-tool {
   display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--text-primary);
+  margin-bottom: 1px;
 }
-
-/* ─── AutoCAD Style Command Line ───────────────────────────────────────── */
-.autocad-command-line {
-  position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 60%;
-  min-width: 400px;
-  max-width: 800px;
-  background: rgba(30,30,30,0.9);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-  overflow: hidden;
-  backdrop-filter: blur(8px);
-  z-index: 100;
+.cmd-tool-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+  background: rgba(88,166,255,0.18); color: var(--accent);
+  padding: 1px 6px; border-radius: 3px;
 }
-
-.command-history {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  padding: 6px 12px 2px;
-  color: #a1a1aa;
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 12px;
+.cmd-pts-badge {
+  font-size: 8px; color: var(--green); font-weight: 600;
+}
+.cmd-history-inline {
+  display: flex; flex-direction: column;
+  max-height: 18px; overflow: hidden;
+}
+.cmd-hist-line {
+  font-size: 10px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   line-height: 1.4;
-  height: 60px;
-  overflow-y: auto;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.cmd-input-row {
+  display: flex; align-items: center;
+}
+.cmd-prompt {
+  color: var(--text-secondary); font-size: 11px; font-weight: 600;
+  margin-right: 6px; flex-shrink: 0;
+}
+.cmd-input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--accent); font-family: var(--font-mono);
+  font-size: 12px; font-weight: 600; min-width: 0;
+}
+.cmd-input::placeholder { color: var(--text-muted); font-weight: 400; }
+
+/* Status Right */
+.status-right {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 10px; flex-shrink: 0;
+}
+.coord-btn {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 3px; padding: 3px 8px;
+  color: #3fb950; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+  cursor: pointer; min-width: 90; text-align: center;
+  transition: all 0.1s ease;
+}
+.coord-btn:hover { border-color: var(--accent); }
+.zoom-badge {
+  font-size: 10px; color: var(--text-secondary); font-weight: 600;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 3px; padding: 3px 6px;
+}
+.layer-chip {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 6px;
 }
 
-.command-input-row {
+/* ─── Right Panel ──────────────────────────────────────────────────────── */
+.plans-right-panel {
+  width: 250px; min-width: 250px;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow: hidden; height: 100%;
+}
+.right-panel-section {
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+.right-panel-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-secondary);
+  background: var(--bg-overlay);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* ─── Style Quick Panel ─────────────────────────────────────────────────── */
+.style-quick-panel {
+  padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.style-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.style-label {
+  font-size: 10px; color: var(--text-muted); font-weight: 600;
+}
+.style-select {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 6px;
+  color: var(--text-primary); font-size: 10px; cursor: pointer;
+  max-width: 130px;
+}
+.style-select:focus { outline: none; border-color: var(--accent); }
+
+/* ─── BIM Panel ────────────────────────────────────────────────────────── */
+.bim-panel {
+  width: 100%;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.bim-panel-header {
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-overlay);
+}
+.bim-panel-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bim-panel-content.empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 12px;
+  align-items: center;
+  margin-top: 20px;
+}
+.prop-row {
   display: flex;
   align-items: center;
-  padding: 6px 12px;
-  background: rgba(0,0,0,0.3);
+  justify-content: space-between;
+  font-size: 12px;
 }
-
-.command-prompt {
+.prop-label {
+  color: var(--text-secondary);
+}
+.prop-value {
   color: var(--text-primary);
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 13px;
-  font-weight: 600;
-  margin-right: 8px;
+  font-weight: 500;
+}
+.prop-input {
+  width: 100px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+}
+.prop-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
-.command-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: #58a6ff;
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 13px;
-  font-weight: 600;
+/* ─── Tooltip ──────────────────────────────────────────────────────────── */
+.tooltip-wrapper {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
 }
+.tooltip-wrapper .tooltip {
+  display: none;
+  position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+  background: var(--bg-overlay); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 8px;
+  font-size: 11px; color: var(--text-primary); white-space: nowrap;
+  pointer-events: none; z-index: 200;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.tooltip-wrapper:hover .tooltip { display: block; }
+
+/* ─── Badge / Pulse ────────────────────────────────────────────────────── */
+.badge {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em;
+  border-radius: 3px; padding: 1px 5px; text-transform: uppercase;
+}
+.badge.blue  { background: rgba(88,166,255,0.15); color: #58a6ff; }
+.badge.green { background: rgba(46,160,67,0.15); color: #2ea043; }
+.badge.pulse { animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+/* ─── Tool-options input ───────────────────────────────────────────────── */
+.tool-options-bar input[type="number"] {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px;
+  color: var(--text-primary); font-family: var(--font-mono);
+  font-size: 11px; text-align: right;
+}
+.tool-options-bar input[type="number"]:focus {
+  outline: none; border-color: var(--accent);
+}
+.tool-options-bar .label {
+  font-size: 11px; color: var(--text-muted); font-weight: 500;
+}
+.color-swatch {
+  width: 10px; height: 10px; border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* ─── Slide-in animation ───────────────────────────────────────────────── */
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.command-line-text { white-space: pre-wrap; word-break: break-word; }

@@ -28,13 +28,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
   },
   "plugins": {
     "shell": {
       "all": true
     },
-    "dialog": {},
     "fs": {
       "all": true
     }

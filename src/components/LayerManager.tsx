@@ -1,6 +1,7 @@
 import React from 'react';
 import { Eye, EyeOff, Lock, Unlock, Plus, Trash2 } from 'lucide-react';
-import { Layer, defaultLayers } from '../lib/adf';
+import type { Layer } from '@/lib/adf';
+import { defaultLayers } from '@/lib/adf';
 import './LayerManager.css';
 
 interface Props {
@@ -11,7 +12,7 @@ interface Props {
 }
 
 const LINEWEIGHTS = [0.05, 0.09, 0.13, 0.18, 0.25, 0.35, 0.5, 0.7, 1.0];
-const LINETYPES: Layer['linetype'][] = ['solid', 'dashed', 'dotted', 'dashdot'];
+const LINETYPES: Layer['linetype'][] = ['continuous', 'dashed', 'dotted', 'dashdot', 'center', 'hidden'];
 
 export default function LayerManager({ layers, onLayersChange, activeLayer, onActiveLayerChange }: Props) {
   const update = (name: string, patch: Partial<Layer>) => {
@@ -20,7 +21,7 @@ export default function LayerManager({ layers, onLayersChange, activeLayer, onAc
 
   const addLayer = () => {
     const name = `Layer ${layers.length + 1}`;
-    onLayersChange([...layers, { name, color: '#aaaaaa', visible: true, locked: false, lineweight: 0.25 }]);
+    onLayersChange([...layers, { name, color: '#aaaaaa', visible: true, locked: false, lineweight: 0.25, linetype: 'continuous' }]);
   };
 
   const removeLayer = (name: string) => {
