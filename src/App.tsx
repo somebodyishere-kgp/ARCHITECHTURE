@@ -305,7 +305,7 @@ export default function App() {
               floors: [...p.floors, {
                 id: crypto.randomUUID(), name: `Floor ${p.floors.length}`,
                 level: p.floors.length, elevation: p.floors.length * 3000,
-                floorHeight: 3000, entities: []
+                floorHeight: 3000, entities: [], dependencyMetadata: { recentReports: [] }
               }]
             }));
           }}>+</button>
@@ -323,13 +323,36 @@ export default function App() {
                 layers={project.layers}
                 onFloorChange={(updated) => {
                   const prevFloor = project.floors[activeFloorIndex];
-                  const { floor: propagatedFloor, report } = propagateFloorDependencies(prevFloor, updated);
-                  if (report.adjustedCount > 0) {
-                    setStatusMsg(`Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`);
+                  const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, updated);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0) {
+                    const base = report.adjustedCount > 0
+                      ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
+                      : 'Living graph diagnostics updated';
+                    const warn = report.warnings.length > 0 ? ` (${report.warnings.length} warning${report.warnings.length === 1 ? '' : 's'})` : '';
+                    setStatusMsg(`${base}${warn}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
-                    floors[activeFloorIndex] = propagatedFloor;
+                    const currentFloor = floors[activeFloorIndex];
+                    const recentReports = [
+                      ...(currentFloor.dependencyMetadata?.recentReports || []),
+                      {
+                        timestamp: new Date().toISOString(),
+                        adjustedCount: report.adjustedCount,
+                        edgeCount: graph.edges.length,
+                        changedRoots: report.changedRoots,
+                        impactedIds: report.impactedIds,
+                        impactReasons: report.impactReasons,
+                        warnings: report.warnings,
+                      },
+                    ].slice(-20);
+                    floors[activeFloorIndex] = {
+                      ...propagatedFloor,
+                      dependencyMetadata: {
+                        lastReport: recentReports[recentReports.length - 1],
+                        recentReports,
+                      },
+                    };
                     return { ...p, floors };
                   });
                 }}
@@ -342,13 +365,36 @@ export default function App() {
                 onEntityUpdate={(entities) => {
                   const prevFloor = project.floors[activeFloorIndex];
                   const nextFloor = { ...prevFloor, entities };
-                  const { floor: propagatedFloor, report } = propagateFloorDependencies(prevFloor, nextFloor);
-                  if (report.adjustedCount > 0) {
-                    setStatusMsg(`Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`);
+                  const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, nextFloor);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0) {
+                    const base = report.adjustedCount > 0
+                      ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
+                      : 'Living graph diagnostics updated';
+                    const warn = report.warnings.length > 0 ? ` (${report.warnings.length} warning${report.warnings.length === 1 ? '' : 's'})` : '';
+                    setStatusMsg(`${base}${warn}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
-                    floors[activeFloorIndex] = propagatedFloor;
+                    const currentFloor = floors[activeFloorIndex];
+                    const recentReports = [
+                      ...(currentFloor.dependencyMetadata?.recentReports || []),
+                      {
+                        timestamp: new Date().toISOString(),
+                        adjustedCount: report.adjustedCount,
+                        edgeCount: graph.edges.length,
+                        changedRoots: report.changedRoots,
+                        impactedIds: report.impactedIds,
+                        impactReasons: report.impactReasons,
+                        warnings: report.warnings,
+                      },
+                    ].slice(-20);
+                    floors[activeFloorIndex] = {
+                      ...propagatedFloor,
+                      dependencyMetadata: {
+                        lastReport: recentReports[recentReports.length - 1],
+                        recentReports,
+                      },
+                    };
                     return { ...p, floors };
                   });
                 }}

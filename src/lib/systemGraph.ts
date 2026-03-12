@@ -1,5 +1,7 @@
 import {
   AnyEntity,
+  DependencyImpactReason,
+  DependencyWarning,
   DimensionEntity,
   DoorEntity,
   FloorPlan,
@@ -25,6 +27,8 @@ export interface DependencyPropagationReport {
   adjustedCount: number;
   impactedIds: string[];
   changedRoots: string[];
+  impactReasons: DependencyImpactReason[];
+  warnings: DependencyWarning[];
 }
 
 function vecChanged(a: number, b: number): boolean {
@@ -149,10 +153,63 @@ export function buildSystemDependencyGraph(entities: AnyEntity[]): SystemDepende
   return { edges, downstream };
 }
 
-export function getDependencyImpactOrder(graph: SystemDependencyGraph, rootIds: string[]): string[] {
+function detectCycles(graph: SystemDependencyGraph): string[][] {
+  const visited = new Set<string>();
+  const active = new Set<string>();
+  const stack: string[] = [];
+  const cycles: string[][] = [];
+
+  const walk = (nodeId: string) => {
+    visited.add(nodeId);
+    active.add(nodeId);
+    stack.push(nodeId);
+
+    const children = graph.downstream.get(nodeId) || [];
+    for (const child of children) {
+      if (!visited.has(child)) {
+        walk(child);
+        continue;
+      }
+      if (active.has(child)) {
+        const cycleStart = stack.indexOf(child);
+        if (cycleStart >= 0) {
+          const cycle = [...stack.slice(cycleStart), child];
+          const key = cycle.join('>');
+          if (!cycles.some(c => c.join('>') === key)) cycles.push(cycle);
+        }
+      }
+    }
+
+    stack.pop();
+    active.delete(nodeId);
+  };
+
+  const nodes = new Set<string>();
+  graph.edges.forEach(edge => {
+    nodes.add(edge.sourceId);
+    nodes.add(edge.targetId);
+  });
+
+  nodes.forEach(nodeId => {
+    if (!visited.has(nodeId)) walk(nodeId);
+  });
+
+  return cycles;
+}
+
+export function getDependencyImpactOrder(graph: SystemDependencyGraph, rootIds: string[]): {
+  order: string[];
+  reasons: DependencyImpactReason[];
+} {
   const order: string[] = [];
   const seen = new Set<string>();
   const queue = [...rootIds];
+  const reasonsByEntity = new Map<string, DependencyImpactReason>();
+  const relationByPair = new Map<string, DependencyRelation>();
+
+  graph.edges.forEach(edge => {
+    relationByPair.set(`${edge.sourceId}->${edge.targetId}`, edge.relation);
+  });
 
   while (queue.length > 0) {
     const current = queue.shift() as string;
@@ -161,11 +218,16 @@ export function getDependencyImpactOrder(graph: SystemDependencyGraph, rootIds: 
       if (seen.has(child)) continue;
       seen.add(child);
       order.push(child);
+      reasonsByEntity.set(child, {
+        entityId: child,
+        dueToId: current,
+        relation: relationByPair.get(`${current}->${child}`) || 'hosted_on',
+      });
       queue.push(child);
     }
   }
 
-  return order;
+  return { order, reasons: Array.from(reasonsByEntity.values()) };
 }
 
 export function propagateFloorDependencies(previousFloor: FloorPlan, nextFloor: FloorPlan): {
@@ -185,14 +247,13 @@ export function propagateFloorDependencies(previousFloor: FloorPlan, nextFloor: 
   }
 
   const graph = buildSystemDependencyGraph(nextFloor.entities);
-  const impactedIds = getDependencyImpactOrder(graph, changedRoots);
-  if (impactedIds.length === 0) {
-    return {
-      floor: nextFloor,
-      graph,
-      report: { adjustedCount: 0, impactedIds: [], changedRoots },
-    };
-  }
+  const cycleWarnings: DependencyWarning[] = detectCycles(graph).map(cycle => ({
+    kind: 'cycle',
+    message: `Dependency cycle detected: ${cycle.join(' -> ')}`,
+    entityIds: cycle,
+  }));
+
+  const { order: impactedIds, reasons: impactReasons } = getDependencyImpactOrder(graph, changedRoots);
 
   const dimensionsByTarget = new Map<string, DimensionEntity[]>();
   for (const entity of nextFloor.entities) {
@@ -202,6 +263,32 @@ export function propagateFloorDependencies(previousFloor: FloorPlan, nextFloor: 
     const list = dimensionsByTarget.get(dim.constrainedEntityId) || [];
     list.push(dim);
     dimensionsByTarget.set(dim.constrainedEntityId, list);
+  }
+
+  const warnings: DependencyWarning[] = [...cycleWarnings];
+  dimensionsByTarget.forEach((dims, targetId) => {
+    const values = Array.from(new Set(dims.map(dim => dim.drivenValue).filter(v => typeof v === 'number')));
+    if (values.length > 1) {
+      warnings.push({
+        kind: 'conflict',
+        message: `Conflicting driven dimension values detected for ${targetId}: ${values.join(', ')}`,
+        entityIds: [targetId, ...dims.map(dim => dim.id)],
+      });
+    }
+  });
+
+  if (impactedIds.length === 0) {
+    return {
+      floor: nextFloor,
+      graph,
+      report: {
+        adjustedCount: 0,
+        impactedIds: [],
+        changedRoots,
+        impactReasons: [],
+        warnings,
+      },
+    };
   }
 
   let adjustedCount = 0;
@@ -257,6 +344,8 @@ export function propagateFloorDependencies(previousFloor: FloorPlan, nextFloor: 
       adjustedCount,
       impactedIds,
       changedRoots,
+      impactReasons,
+      warnings,
     },
   };
 }

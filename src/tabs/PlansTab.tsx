@@ -6667,6 +6667,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   }, [transform, floor, activeLayer, onFloorChange, pushUndo, cmdLog, screenToWorld]);
 
   const selectedObjects = floor.entities.filter(e => selectedIds.includes(e.id));
+  const dependencyReport = floor.dependencyMetadata?.lastReport;
 
   const selectTool = useCallback((toolId: Tool) => {
     setActiveTool(toolId);
@@ -7303,6 +7304,64 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
               <AssetLibrary onInsertAsset={handleInsertAsset} />
             </div>
           )}
+        </div>
+
+        <div className="right-panel-section">
+          <div className="right-panel-header">
+            <Triangle size={12} />
+            <span>Dependency Diagnostics</span>
+          </div>
+          <div style={{ padding: 10, fontSize: 10, color: 'var(--text-secondary)' }}>
+            {dependencyReport ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>Adjusted</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{dependencyReport.adjustedCount}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>Roots</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{dependencyReport.changedRoots.length}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span>Impacted</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{dependencyReport.impactedIds.length}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span>Warnings</span>
+                  <span style={{ color: dependencyReport.warnings.length > 0 ? '#f59e0b' : 'var(--text-primary)' }}>{dependencyReport.warnings.length}</span>
+                </div>
+
+                {dependencyReport.impactReasons.length > 0 && (
+                  <div style={{ marginBottom: 6 }}>
+                    <div style={{ color: 'var(--text-muted)', marginBottom: 3 }}>What changed because of what</div>
+                    <div style={{ maxHeight: 76, overflowY: 'auto', display: 'grid', gap: 2 }}>
+                      {dependencyReport.impactReasons.slice(0, 8).map((reason, i) => (
+                        <div key={`${reason.entityId}-${i}`} style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px' }}>
+                          <span style={{ color: 'var(--text-primary)' }}>{reason.entityId}</span>
+                          <span style={{ color: 'var(--text-muted)' }}> ← {reason.dueToId} ({reason.relation})</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {dependencyReport.warnings.length > 0 && (
+                  <div>
+                    <div style={{ color: '#f59e0b', marginBottom: 3 }}>Warnings</div>
+                    <div style={{ maxHeight: 70, overflowY: 'auto', display: 'grid', gap: 2 }}>
+                      {dependencyReport.warnings.slice(0, 5).map((warning, i) => (
+                        <div key={`${warning.kind}-${i}`} style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 3, padding: '2px 4px', color: '#fcd34d' }}>
+                          {warning.kind.toUpperCase()}: {warning.message}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-muted)' }}>No dependency propagation has run yet.</div>
+            )}
+          </div>
         </div>
 
         {/* Properties panel — always shows when entity selected */}

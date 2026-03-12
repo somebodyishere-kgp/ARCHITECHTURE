@@ -694,6 +694,7 @@ export interface FloorPlan {
   elevation: number;
   floorHeight: number;
   entities: AnyEntity[];
+  dependencyMetadata?: FloorDependencyMetadata;
 }
 
 // ─── Sheet / Drawing layout (see expanded Paper Space section below) ─────────
@@ -776,6 +777,66 @@ export interface ProjectMigrationEntry {
   notes: string;
 }
 
+export interface DependencyImpactReason {
+  entityId: string;
+  dueToId: string;
+  relation: 'hosted_on' | 'constrained_to' | 'tagged_to';
+}
+
+export interface DependencyWarning {
+  kind: 'cycle' | 'conflict';
+  message: string;
+  entityIds: string[];
+}
+
+export interface DependencyPropagationDiagnostics {
+  timestamp: string;
+  adjustedCount: number;
+  edgeCount: number;
+  changedRoots: string[];
+  impactedIds: string[];
+  impactReasons: DependencyImpactReason[];
+  warnings: DependencyWarning[];
+}
+
+export interface FloorDependencyMetadata {
+  lastReport?: DependencyPropagationDiagnostics;
+  recentReports: DependencyPropagationDiagnostics[];
+}
+
+export interface DesignBranchNode {
+  id: string;
+  name: string;
+  parentId?: string;
+  createdAt: string;
+  objective?: string;
+}
+
+export interface DesignBranchGraph {
+  activeBranchId: string;
+  nodes: DesignBranchNode[];
+}
+
+export interface TimelineEvent {
+  id: string;
+  time: number;
+  type: string;
+  entityId?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface TimelineTrack {
+  id: string;
+  name: string;
+  kind: 'construction' | 'aging' | 'sun' | 'occupancy' | 'maintenance' | 'custom';
+  events: TimelineEvent[];
+}
+
+export interface ProjectTimeline {
+  activeTime: number;
+  tracks: TimelineTrack[];
+}
+
 // ─── Top-level project ───────────────────────────────────────────────────────
 export interface ADFProject {
   version: string;
@@ -792,6 +853,8 @@ export interface ADFProject {
   blocks: BlockDef[];
   presetLibrary?: ProjectPresetLibrary;
   migrationHistory?: ProjectMigrationEntry[];
+  branchGraph?: DesignBranchGraph;
+  timeline?: ProjectTimeline;
   buildingCodes?: Record<string, unknown>;
   generatedFromPrompt?: string;
 }
@@ -805,9 +868,10 @@ export function uid(): string {
 }
 
 export function createProject(name = 'New Project'): ADFProject {
+  const rootBranchId = uid();
   return {
     version: '1.0',
-    schemaVersion: 3,
+    schemaVersion: 4,
     projectName: name,
     location: '',
     buildingType: 'residential',
@@ -820,6 +884,14 @@ export function createProject(name = 'New Project'): ADFProject {
     blocks: [],
     presetLibrary: { views: [], sections: [], sectionSets: [], elevations: [], worlds: [] },
     migrationHistory: [],
+    branchGraph: {
+      activeBranchId: rootBranchId,
+      nodes: [{ id: rootBranchId, name: 'Main', createdAt: new Date().toISOString() }],
+    },
+    timeline: {
+      activeTime: 0,
+      tracks: [],
+    },
   };
 }
 
@@ -831,6 +903,7 @@ export function createFloor(
     name, level, elevation,
     floorHeight: height,
     entities: [],
+    dependencyMetadata: { recentReports: [] },
   };
 }
 

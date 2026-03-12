@@ -1,6 +1,15 @@
-import { ADFProject, ProjectMigrationEntry, ProjectPresetLibrary, createProject } from './adf';
+import {
+  ADFProject,
+  DesignBranchGraph,
+  FloorPlan,
+  ProjectMigrationEntry,
+  ProjectPresetLibrary,
+  ProjectTimeline,
+  createProject,
+  uid,
+} from './adf';
 
-export const CURRENT_PROJECT_SCHEMA = 3;
+export const CURRENT_PROJECT_SCHEMA = 4;
 
 export interface MigrationReport {
   from: number;
@@ -21,6 +30,38 @@ function ensurePresetLibrary(value: unknown): ProjectPresetLibrary {
     sectionSets: toArray(src.sectionSets) as ProjectPresetLibrary['sectionSets'],
     elevations: toArray(src.elevations) as ProjectPresetLibrary['elevations'],
     worlds: toArray(src.worlds) as ProjectPresetLibrary['worlds'],
+  };
+}
+
+function ensureBranchGraph(value: unknown): DesignBranchGraph {
+  const src = isRecord(value) ? value : {};
+  const nodes = Array.isArray(src.nodes) ? (src.nodes as DesignBranchGraph['nodes']) : [];
+  const activeBranchId = typeof src.activeBranchId === 'string' ? src.activeBranchId : '';
+  if (nodes.length === 0) {
+    const rootId = uid();
+    return {
+      activeBranchId: rootId,
+      nodes: [{ id: rootId, name: 'Main', createdAt: new Date().toISOString() }],
+    };
+  }
+  return {
+    activeBranchId: activeBranchId || nodes[0].id,
+    nodes,
+  };
+}
+
+function ensureTimeline(value: unknown): ProjectTimeline {
+  const src = isRecord(value) ? value : {};
+  return {
+    activeTime: typeof src.activeTime === 'number' ? src.activeTime : 0,
+    tracks: Array.isArray(src.tracks) ? (src.tracks as ProjectTimeline['tracks']) : [],
+  };
+}
+
+function ensureFloorDependencyMetadata(floor: FloorPlan): FloorPlan {
+  return {
+    ...floor,
+    dependencyMetadata: floor.dependencyMetadata || { recentReports: [] },
   };
 }
 
@@ -47,6 +88,8 @@ function normalizeBaseProject(raw: unknown): ADFProject {
     migrationHistory: Array.isArray(raw.migrationHistory)
       ? (raw.migrationHistory as ProjectMigrationEntry[])
       : [],
+    branchGraph: ensureBranchGraph(raw.branchGraph),
+    timeline: ensureTimeline(raw.timeline),
   };
 }
 
@@ -84,10 +127,28 @@ export function migrateProjectData(raw: unknown): { project: ADFProject; report:
       continue;
     }
 
+    if (schemaVersion === 3) {
+      project.branchGraph = ensureBranchGraph(project.branchGraph);
+      project.timeline = ensureTimeline(project.timeline);
+      project.floors = project.floors.map(ensureFloorDependencyMetadata);
+      const step: ProjectMigrationEntry = {
+        from: 3,
+        to: 4,
+        timestamp: new Date().toISOString(),
+        notes: 'Initialized branch graph, timeline scaffolding, and floor dependency metadata.',
+      };
+      applied.push(step);
+      schemaVersion = 4;
+      continue;
+    }
+
     break;
   }
 
   project.schemaVersion = Math.max(schemaVersion, CURRENT_PROJECT_SCHEMA);
+  project.branchGraph = ensureBranchGraph(project.branchGraph);
+  project.timeline = ensureTimeline(project.timeline);
+  project.floors = project.floors.map(ensureFloorDependencyMetadata);
   project.migrationHistory = [...(project.migrationHistory || []), ...applied];
 
   return {
