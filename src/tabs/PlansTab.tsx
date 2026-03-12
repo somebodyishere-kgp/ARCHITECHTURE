@@ -3,7 +3,7 @@
 // AutoCAD-level drafting: 30+ tools, snap engine, ortho, polar tracking,
 // undo/redo, selection modes, command line, dimension engine, hatch, blocks
 // ═══════════════════════════════════════════════════════════════════════════════
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import {
   MousePointer2, Pencil, Square, Circle, Minus, RotateCw,
   Move, Copy, Scissors, Ruler, Type, ZoomIn, ZoomOut, Maximize2,
@@ -683,6 +683,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
   // Command line
   const [cmdText, setCmdText]       = useState('');
+  const [cmdSuggestIndex, setCmdSuggestIndex] = useState(0);
   const [cmdHistory, setCmdHistory] = useState<string[]>(['ArchFlow Command Line ready. Type a command (e.g. line, wall, trim, offset).']);
 
   // ── Dynamic Input ───────────────────────────────────────────────────────
@@ -6258,6 +6259,24 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
 
   // ── Command line submit ─────────────────────────────────────────────────
   const handleCmdSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      if (cmdSuggestions.length === 0) return;
+      e.preventDefault();
+      setCmdSuggestIndex(i => Math.min(i + 1, cmdSuggestions.length - 1));
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      if (cmdSuggestions.length === 0) return;
+      e.preventDefault();
+      setCmdSuggestIndex(i => Math.max(i - 1, 0));
+      return;
+    }
+    if (e.key === 'Tab') {
+      if (cmdSuggestions.length === 0) return;
+      e.preventDefault();
+      setCmdText(cmdSuggestions[cmdSuggestIndex] || cmdSuggestions[0]);
+      return;
+    }
     if (e.key !== 'Enter' || !cmdText.trim()) return;
     const cmd = cmdText.trim().toLowerCase();
     cmdLog(`> ${cmd}`);
@@ -6613,9 +6632,10 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
       cmdLog('── SELECT ─ sf select_filter, sbt by_type, sbl by_layer, sbc by_color');
       cmdLog('── SPECIAL ─ erase/e, oops, qselect, count, color, chprop, regen, ortho, polar, osnap, gridsnap, intsnap, censnap, fit/ze/zoom');
     }
-    else if (toolMap[cmd]) { setActiveTool(toolMap[cmd]); setDrawPts([]); cmdLog(`Tool: ${toolMap[cmd]}`); }
+    else if (toolMap[cmd]) { selectTool(toolMap[cmd]); cmdLog(`Tool: ${toolMap[cmd]}`); }
     else { cmdLog(`Unknown: "${cmd}". Type "help" for command list.`); }
     setCmdText('');
+    setCmdSuggestIndex(0);
   };
 
   // ── Entity update callback ──────────────────────────────────────────────
@@ -6654,6 +6674,24 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     setXformState(null);
     setRecentTools(prev => [toolId, ...prev.filter(t => t !== toolId)].slice(0, 8));
   }, []);
+
+  const commandCatalog = useMemo(() => {
+    const toolCommands = TOOL_GROUPS.flatMap(group =>
+      group.tools.flatMap(tool => [tool.id, tool.label.toLowerCase()])
+    );
+    const coreCommands = [
+      'line', 'circle', 'rectangle', 'polyline', 'wall', 'door', 'window', 'stair',
+      'move', 'copy', 'rotate', 'trim', 'extend', 'offset', 'undo', 'redo', 'erase',
+      'help', 'fit', 'zoom', 'regen', 'count', 'qselect', 'chprop', 'color',
+    ];
+    return Array.from(new Set([...toolCommands, ...coreCommands]));
+  }, []);
+
+  const cmdSuggestions = useMemo(() => {
+    const q = cmdText.trim().toLowerCase();
+    if (!q) return [];
+    return commandCatalog.filter(cmd => cmd.includes(q)).slice(0, 6);
+  }, [cmdText, commandCatalog]);
 
   const toolSearchQuery = toolSearch.trim().toLowerCase();
   const filteredToolGroups = toolSearchQuery
@@ -7131,9 +7169,24 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
             <div className="cmd-input-row">
               <span className="cmd-prompt">Command:</span>
               <input type="text" className="cmd-input" value={cmdText}
-                onChange={e => setCmdText(e.target.value)} onKeyDown={handleCmdSubmit}
+                onChange={e => { setCmdText(e.target.value); setCmdSuggestIndex(0); }} onKeyDown={handleCmdSubmit}
                 autoComplete="off" spellCheck="false" placeholder="Type command or shortcut..." />
             </div>
+            {cmdSuggestions.length > 0 && (
+              <div className="cmd-suggestions">
+                {cmdSuggestions.map((suggestion, index) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    className={`cmd-suggestion${index === cmdSuggestIndex ? ' active' : ''}`}
+                    onMouseEnter={() => setCmdSuggestIndex(index)}
+                    onClick={() => setCmdText(suggestion)}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Right: Coords + Zoom + Layer */}

@@ -168,6 +168,28 @@
   font-size: 12px; font-weight: 600; min-width: 0;
 }
 .cmd-input::placeholder { color: var(--text-muted); font-weight: 400; }
+.cmd-suggestions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+.cmd-suggestion {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.cmd-suggestion.active,
+.cmd-suggestion:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(88,166,255,0.12);
+}
 
 /* Status Right */
 .status-right {

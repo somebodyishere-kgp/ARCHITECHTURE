@@ -42,6 +42,7 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const [sheetZoom, setSheetZoom] = useState(0.5);
   const [scheduleQuery, setScheduleQuery] = useState('');
   const [scheduleTypeFilter, setScheduleTypeFilter] = useState<'all' | 'door' | 'window'>('all');
+  const [newRevisionNote, setNewRevisionNote] = useState('');
   const sheetCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const allEntities = project.floors.flatMap(f => f.entities);
@@ -52,6 +53,11 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
   const totalWallLen = calcWallLength(allEntities);
 
   const selectedSheet = project.sheets.find(s => s.id === selectedSheetId) || null;
+  const sheetRevisions = selectedSheet
+    ? (selectedSheet.annotations || [])
+        .filter(a => (a as any).type === 'revision_tag' && (a as any).isSheetRevision)
+        .sort((a, b) => String((b as any).date || '').localeCompare(String((a as any).date || '')))
+    : [];
 
   const filteredDoors = doors.filter(d => {
     if (scheduleTypeFilter !== 'all' && scheduleTypeFilter !== 'door') return false;
@@ -123,6 +129,41 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
     const updatedSheets = project.sheets.map(s => s.id === selectedSheet.id
       ? { ...s, titleBlock: { ...s.titleBlock, ...updates } }
       : s
+    );
+    onProjectChange({ ...project, sheets: updatedSheets });
+  };
+
+  const addSheetRevision = () => {
+    if (!selectedSheet || !newRevisionNote.trim()) return;
+    const author = selectedSheet.titleBlock.checkedBy || selectedSheet.titleBlock.drawnBy || 'Team';
+    const revisionEntry = {
+      id: uid(),
+      type: 'revision_tag',
+      layer: 'Annotations',
+      x: 0,
+      y: 0,
+      note: newRevisionNote.trim(),
+      revision: selectedSheet.titleBlock.revision,
+      date: new Date().toISOString().split('T')[0],
+      author,
+      isSheetRevision: true,
+    } as any;
+    const updatedSheets = project.sheets.map(s =>
+      s.id === selectedSheet.id
+        ? { ...s, annotations: [...(s.annotations || []), revisionEntry] }
+        : s
+    );
+    onProjectChange({ ...project, sheets: updatedSheets });
+    setNewRevisionNote('');
+    onStatusChange('Revision entry added to sheet log.');
+  };
+
+  const removeSheetRevision = (revisionId: string) => {
+    if (!selectedSheet) return;
+    const updatedSheets = project.sheets.map(s =>
+      s.id === selectedSheet.id
+        ? { ...s, annotations: (s.annotations || []).filter(a => a.id !== revisionId) }
+        : s
     );
     onProjectChange({ ...project, sheets: updatedSheets });
   };
@@ -378,6 +419,37 @@ export default function DocsTab({ project, onProjectChange, onStatusChange }: Pr
                       onChange={e => updateSelectedSheetTitleBlock({ revision: e.target.value })}
                       placeholder="Revision"
                     />
+                  </div>
+                  <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600 }}>Revision Log</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sheetRevisions.length} entries</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                      <input
+                        value={newRevisionNote}
+                        onChange={e => setNewRevisionNote(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') addSheetRevision(); }}
+                        placeholder="Add revision note"
+                        style={{ flex: 1 }}
+                      />
+                      <button className="btn" onClick={addSheetRevision}><Plus size={10}/> Add</button>
+                    </div>
+                    <div style={{ maxHeight: 110, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {sheetRevisions.length === 0 && (
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>No revisions logged for this sheet yet.</div>
+                      )}
+                      {sheetRevisions.map(rev => (
+                        <div key={rev.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-elevated)', borderRadius: 4, padding: '4px 6px' }}>
+                          <span style={{ fontSize: 10, color: 'var(--text-secondary)', minWidth: 70 }}>{(rev as any).date || '-'}</span>
+                          <span style={{ fontSize: 10, color: 'var(--text-primary)', flex: 1 }}>{(rev as any).note || '-'}</span>
+                          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{(rev as any).author || ''}</span>
+                          <button className="btn ghost icon-only" style={{ padding: 2 }} onClick={() => removeSheetRevision(rev.id)}>
+                            <Trash2 size={10}/>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </>
               ) : (

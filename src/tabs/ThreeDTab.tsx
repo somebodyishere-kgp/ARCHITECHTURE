@@ -153,6 +153,12 @@ interface ViewPreset {
   sunPosition: { azimuth: number; altitude: number };
 }
 
+interface SectionPreset {
+  id: string;
+  name: string;
+  height: number;
+}
+
 type QuickAssetKind =
   | 'chair'
   | 'desk'
@@ -221,6 +227,8 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [showSectionPlane, setShowSectionPlane] = useState(false);
   const [isIsolationActive, setIsIsolationActive] = useState(false);
   const [sectionHeight, setSectionHeight] = useState(1.2); // meters
+  const [sectionPresets, setSectionPresets] = useState<SectionPreset[]>([]);
+  const [newSectionPresetName, setNewSectionPresetName] = useState('');
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>([]);
   const [newPresetName, setNewPresetName] = useState('');
@@ -810,6 +818,28 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   const deleteViewPreset = useCallback((id: string) => {
     setViewPresets(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const saveSectionPreset = useCallback(() => {
+    const name = newSectionPresetName.trim() || `Cut ${sectionPresets.length + 1}`;
+    const preset: SectionPreset = {
+      id: `section_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      height: sectionHeight,
+    };
+    setSectionPresets(prev => [...prev.slice(-5), preset]);
+    setNewSectionPresetName('');
+    onStatusChange(`Saved section preset: ${name}`);
+  }, [newSectionPresetName, onStatusChange, sectionHeight, sectionPresets.length]);
+
+  const applySectionPreset = useCallback((preset: SectionPreset) => {
+    setShowSectionPlane(true);
+    setSectionHeight(preset.height);
+    onStatusChange(`Applied section preset: ${preset.name}`);
+  }, [onStatusChange]);
+
+  const removeSectionPreset = useCallback((id: string) => {
+    setSectionPresets(prev => prev.filter(p => p.id !== id));
   }, []);
 
   const insertQuickAsset = useCallback((kind: QuickAssetKind) => {
@@ -3420,6 +3450,33 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                      onChange={e => setSectionHeight(parseFloat(e.target.value))}
                      style={{ width: '100%' }} />
               <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>{sectionHeight.toFixed(1)}m</div>
+              <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                <input
+                  value={newSectionPresetName}
+                  onChange={e => setNewSectionPresetName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveSectionPreset(); }}
+                  placeholder="Save section preset"
+                  style={{ flex: 1, minWidth: 0, fontSize: 10, padding: '2px 6px' }}
+                />
+                <button className="btn" style={{ fontSize: 10, padding: '2px 6px' }} onClick={saveSectionPreset}>
+                  <Plus size={10}/> Save
+                </button>
+              </div>
+              {sectionPresets.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
+                  {sectionPresets.map(preset => (
+                    <div key={preset.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <button className="btn ghost" style={{ flex: 1, fontSize: 10, padding: '2px 6px', justifyContent: 'space-between' }} onClick={() => applySectionPreset(preset)}>
+                        <span>{preset.name}</span>
+                        <span>{preset.height.toFixed(1)}m</span>
+                      </button>
+                      <button className="btn ghost icon-only" style={{ padding: 2 }} onClick={() => removeSectionPreset(preset.id)}>
+                        <Trash2 size={10}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
