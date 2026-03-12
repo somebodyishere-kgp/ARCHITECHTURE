@@ -1,12 +1,17 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+import { SSRPass } from 'three/addons/postprocessing/SSRPass.js';
+import { TAARenderPass } from 'three/addons/postprocessing/TAARenderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+import { CSM } from 'three/addons/csm/CSM.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import {
   RefreshCw, Sun, Camera, Layers, Settings2, Play, Box, FileText, Download,
   Eye, EyeOff, Grid3X3, Move, RotateCw, RotateCcw, Maximize, MousePointer, Crosshair,
@@ -60,6 +65,7 @@ type Tool3D =
   | 'walkthrough';
 
 type ViewMode = 'perspective' | 'top' | 'front' | 'back' | 'left' | 'right' | 'iso_nw' | 'iso_ne' | 'iso_sw' | 'iso_se';
+type RenderQuality = 'auto' | 'ultra' | 'balanced' | 'performance';
 
 interface Props {
   floor: FloorPlan;
@@ -77,6 +83,57 @@ interface SceneObject {
   color: string;
 }
 
+interface ChunkBounds {
+  min: [number, number, number];
+  max: [number, number, number];
+  center: [number, number, number];
+}
+
+interface InstanceTransformPayload {
+  id: string;
+  matrix: number[];
+}
+
+interface InstanceBatchPayload {
+  prototype_type: string;
+  prototype_size: [number, number, number];
+  material: string;
+  color: string;
+  instances: InstanceTransformPayload[];
+}
+
+interface ChunkPayload {
+  scene_id: string;
+  chunk_index: number;
+  chunk_size: number;
+  scene_objects: SceneObject[];
+  is_final: boolean;
+  bounds: ChunkBounds;
+}
+
+interface NativeScenePayload {
+  scene_id: string;
+  scene_objects: SceneObject[];
+  chunk_count: number;
+  chunk_size: number;
+  first_chunk: SceneObject[];
+  native?: {
+    mesh_batches?: unknown[];
+    instance_batches?: InstanceBatchPayload[];
+    metadata?: Record<string, unknown>;
+  };
+  ambient_light?: { color: string; intensity: number };
+  directional_light?: {
+    color: string;
+    intensity: number;
+    position: [number, number, number];
+  };
+  camera?: {
+    position: [number, number, number];
+    target: [number, number, number];
+  };
+}
+
 // ─── Section/Elevation generation ────────────────────────────────────────────
 interface SectionLine { start: Vec2; end: Vec2; lookDir: 'left' | 'right'; }
 interface SectionResult {
@@ -88,13 +145,27 @@ interface SectionResult {
 
 const mmToM = 0.001;
 
+(THREE.BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
+(THREE.BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
+(THREE.Mesh.prototype as any).raycast = acceleratedRaycast;
+
 export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpdate }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const sceneRef   = useRef<THREE.Scene | null>(null);
   const cameraRef  = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const composerRef = useRef<EffectComposer | null>(null);
+  const renderPassRef = useRef<RenderPass | null>(null);
   const ssaoPassRef = useRef<SSAOPass | null>(null);
+  const ssrPassRef = useRef<SSRPass | null>(null);
+  const taaPassRef = useRef<TAARenderPass | null>(null);
+  const csmRef = useRef<CSM | null>(null);
+  const skyRef = useRef<Sky | null>(null);
+  const governorFrameTimesRef = useRef<number[]>([]);
+  const governorScaleRef = useRef(1);
+  const governorFrameRef = useRef(0);
+  const occlusionCullRef = useRef(false);
+  const instancedObjectIdsRef = useRef<Set<string>>(new Set());
   const frameRef   = useRef<number>(0);
   const isDragging = useRef(false);
   const lastMouse  = useRef({ x: 0, y: 0 });
@@ -105,11 +176,14 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const entityMeshMap = useRef<Map<string, THREE.Object3D>>(new Map());
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const axesRef = useRef<THREE.AxesHelper | null>(null);
+  const nativeGenerationRef = useRef(0);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasModel, setHasModel]         = useState(false);
   const [renderMode, setRenderMode]     = useState<'solid' | 'wireframe' | 'clay' | 'realistic' | 'xray'>('solid');
-  const [sceneData, setSceneData]       = useState<Record<string, unknown> | null>(null);
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>('auto');
+  const [useNativeMesher, setUseNativeMesher] = useState(true);
+  const [sceneData, setSceneData]       = useState<NativeScenePayload | null>(null);
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [activeTool, setActiveTool]     = useState<Tool3D>('orbit');
   const [viewMode, setViewMode]         = useState<ViewMode>('perspective');
@@ -117,6 +191,13 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [showAxes, setShowAxes]         = useState(true);
   const [showShadows, setShowShadows]   = useState(true);
   const [enableSSAO, setEnableSSAO]     = useState(false);
+  const [enableSSR, setEnableSSR]       = useState(false);
+  const [enableTAA, setEnableTAA]       = useState(false);
+  const [enableCSM, setEnableCSM]       = useState(false);
+  const [enableSky, setEnableSky]       = useState(true);
+  const [enableGovernor, setEnableGovernor] = useState(true);
+  const [enableOcclusionThrottle, setEnableOcclusionThrottle] = useState(true);
+  const [frameTimeMs, setFrameTimeMs]   = useState(0);
   const [showSectionPlane, setShowSectionPlane] = useState(false);
   const [sectionHeight, setSectionHeight] = useState(1.2); // meters
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
@@ -128,6 +209,8 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [floorVisibility, setFloorVisibility] = useState<Record<string, boolean>>({});
   const [ambientOcclusion, setAmbientOcclusion] = useState(false);
   const [sunPosition, setSunPosition] = useState({ azimuth: 45, altitude: 60 });
+  const [useGeoSun, setUseGeoSun] = useState(false);
+  const [geoSunParams, setGeoSunParams] = useState({ latitude: 28.6139, longitude: 77.2090, dayOfYear: 172, hour: 13 });
 
   // ─── New state for advanced features ──────────────────────────
   const [walkthroughMode, setWalkthroughMode] = useState(false);
@@ -147,6 +230,48 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [creationStep, setCreationStep] = useState(0);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const gridSnapSize = 250; // mm
+
+  const effectiveQuality = useMemo<Exclude<RenderQuality, 'auto'>>(() => {
+    if (renderQuality !== 'auto') return renderQuality;
+    const count = floor.entities.length;
+    if (count > 3500) return 'performance';
+    if (count > 1800) return 'balanced';
+    return 'ultra';
+  }, [renderQuality, floor.entities.length]);
+
+  const qualityProfile = useMemo(() => {
+    if (effectiveQuality === 'performance') {
+      return {
+        pixelRatioCap: 1.0,
+        shadowMapSize: 1024,
+        allowSSAO: false,
+        ssaoKernelRadius: 8,
+        ssaoMinDistance: 0.01,
+        ssaoMaxDistance: 0.2,
+        exposure: 1.0,
+      };
+    }
+    if (effectiveQuality === 'balanced') {
+      return {
+        pixelRatioCap: 1.4,
+        shadowMapSize: 2048,
+        allowSSAO: true,
+        ssaoKernelRadius: 12,
+        ssaoMinDistance: 0.008,
+        ssaoMaxDistance: 0.14,
+        exposure: 1.1,
+      };
+    }
+    return {
+      pixelRatioCap: 2.0,
+      shadowMapSize: 4096,
+      allowSSAO: true,
+      ssaoKernelRadius: 16,
+      ssaoMinDistance: 0.005,
+      ssaoMaxDistance: 0.1,
+      exposure: 1.2,
+    };
+  }, [effectiveQuality]);
 
   // ─── 3D Undo / Redo ──────────────────────────────────────────
   const MAX_UNDO_3D = 50;
@@ -234,7 +359,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     // Renderer — high quality
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     renderer.setSize(W, H);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityProfile.pixelRatioCap));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -242,18 +367,43 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     mount.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // ─── Post-processing: SSAO ───
+    // ─── Post-processing chain ───
     const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
     const ssaoPass = new SSAOPass(scene, camera, W, H);
     ssaoPass.kernelRadius = 16;
     ssaoPass.minDistance = 0.005;
     ssaoPass.maxDistance = 0.1;
     ssaoPass.enabled = false; // off by default
     composer.addPass(ssaoPass);
+
+    const taaPass = new TAARenderPass(scene, camera);
+    taaPass.sampleLevel = effectiveQuality === 'ultra' ? 2 : 1;
+    taaPass.unbiased = true;
+    taaPass.enabled = false;
+    composer.addPass(taaPass);
+
+    const ssrPass = new SSRPass({
+      renderer,
+      scene,
+      camera,
+      width: W,
+      height: H,
+      groundReflector: null,
+      selects: null,
+    });
+    ssrPass.enabled = false;
+    (ssrPass as any).maxDistance = 28;
+    (ssrPass as any).thickness = 0.018;
+    composer.addPass(ssrPass);
+
     composer.addPass(new OutputPass());
     composerRef.current = composer;
+    renderPassRef.current = renderPass;
     ssaoPassRef.current = ssaoPass;
+    taaPassRef.current = taaPass;
+    ssrPassRef.current = ssrPass;
 
     // ─── Lighting rig ───
     // Ambient hemisphere
@@ -266,7 +416,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     sun.name = 'sun';
     sun.position.set(15, 25, 10);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(4096, 4096);
+    sun.shadow.mapSize.set(qualityProfile.shadowMapSize, qualityProfile.shadowMapSize);
     sun.shadow.camera.near = 0.5;
     sun.shadow.camera.far = 200;
     sun.shadow.camera.left = -60;
@@ -287,6 +437,35 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     const rim = new THREE.DirectionalLight(0xffeedd, 0.3);
     rim.position.set(0, 3, -15);
     scene.add(rim);
+
+    // Physical sky dome (can be toggled)
+    const sky = new Sky();
+    sky.scale.setScalar(450000);
+    sky.name = 'sky';
+    scene.add(sky);
+    skyRef.current = sky;
+
+    const skyUniforms = (sky.material as THREE.ShaderMaterial).uniforms;
+    skyUniforms['turbidity'].value = 9;
+    skyUniforms['rayleigh'].value = 2.2;
+    skyUniforms['mieCoefficient'].value = 0.004;
+    skyUniforms['mieDirectionalG'].value = 0.8;
+
+    // Optional cascaded shadows for large scenes
+    const csm = new CSM({
+      camera,
+      parent: scene,
+      cascades: effectiveQuality === 'ultra' ? 4 : 3,
+      maxFar: Math.min(camera.far, 600),
+      mode: 'practical',
+      shadowMapSize: qualityProfile.shadowMapSize,
+      lightDirection: new THREE.Vector3(0.6, -1.0, 0.4).normalize(),
+      lightIntensity: 1.3,
+      lightNear: 1,
+      lightFar: 600,
+    });
+    csm.fade = true;
+    csmRef.current = csm;
 
     // Ground grid
     const grid = new THREE.GridHelper(100, 100, 0x1a2030, 0x141a24);
@@ -323,11 +502,60 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     const clock = new THREE.Clock();
     const animate = () => {
       frameRef.current = requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      const dtMs = delta * 1000;
+      governorFrameTimesRef.current.push(dtMs);
+      if (governorFrameTimesRef.current.length > 45) governorFrameTimesRef.current.shift();
+      governorFrameRef.current += 1;
+      if (governorFrameRef.current % 10 === 0) {
+        setFrameTimeMs(prev => prev * 0.85 + dtMs * 0.15);
+      }
+
+      if (enableCSM && csmRef.current) {
+        csmRef.current.update();
+      }
+
+      if (enableGovernor && governorFrameRef.current % 20 === 0 && governorFrameTimesRef.current.length > 10) {
+        const avg = governorFrameTimesRef.current.reduce((acc, v) => acc + v, 0) / governorFrameTimesRef.current.length;
+        const rendererNext = rendererRef.current;
+        if (rendererNext) {
+          if (avg > 28 && governorScaleRef.current > 0.6) {
+            governorScaleRef.current = Math.max(0.6, governorScaleRef.current - 0.08);
+            rendererNext.setPixelRatio(Math.min(window.devicePixelRatio, qualityProfile.pixelRatioCap) * governorScaleRef.current);
+            occlusionCullRef.current = true;
+          } else if (avg < 16 && governorScaleRef.current < 1.0) {
+            governorScaleRef.current = Math.min(1.0, governorScaleRef.current + 0.04);
+            rendererNext.setPixelRatio(Math.min(window.devicePixelRatio, qualityProfile.pixelRatioCap) * governorScaleRef.current);
+            if (governorScaleRef.current > 0.9) occlusionCullRef.current = false;
+          }
+
+          if (avg > 30 && ssrPassRef.current?.enabled) {
+            ssrPassRef.current.enabled = false;
+          }
+          if (avg > 34 && taaPassRef.current?.enabled) {
+            taaPassRef.current.enabled = false;
+          }
+        }
+      }
+
+      if (enableOcclusionThrottle && occlusionCullRef.current && cameraRef.current && governorFrameRef.current % 8 === 0) {
+        const cam = cameraRef.current.position;
+        scene.traverse(obj => {
+          if (!(obj instanceof THREE.Mesh) || !obj.userData?.archflow) return;
+          if (obj.userData?.entityType === 'wall' || obj.userData?.entityType === 'slab' || obj.userData?.entityType === 'roof') {
+            obj.visible = true;
+            return;
+          }
+          const distSq = obj.position.distanceToSquared(cam);
+          obj.visible = distSq < 2500;
+        });
+      }
+
       // Section clipping plane
       if (sectionClipRef.current && renderer.clippingPlanes.length > 0) {
         renderer.clippingPlanes = [sectionClipRef.current];
       }
-      if (ssaoPass.enabled) {
+      if (ssaoPass.enabled || ssrPass.enabled || taaPass.enabled) {
         composer.render();
       } else {
         renderer.render(scene, camera);
@@ -339,6 +567,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     const obs = new ResizeObserver(() => {
       const nW = mount.clientWidth, nH = mount.clientHeight;
       renderer.setSize(nW, nH);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityProfile.pixelRatioCap));
       composer.setSize(nW, nH);
       camera.aspect = nW / nH;
       camera.updateProjectionMatrix();
@@ -349,9 +578,30 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
       cancelAnimationFrame(frameRef.current);
       obs.disconnect();
       renderer.dispose();
+      csm.dispose();
       mount.removeChild(renderer.domElement);
     };
-  }, []);
+  }, [effectiveQuality, enableCSM, enableGovernor, enableOcclusionThrottle, qualityProfile.pixelRatioCap, qualityProfile.shadowMapSize]);
+
+  // ─── Renderer quality profile ─────────────────────────────────────
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, qualityProfile.pixelRatioCap));
+
+    const sun = sceneRef.current?.getObjectByName('sun') as THREE.DirectionalLight | undefined;
+    if (sun) {
+      sun.shadow.mapSize.set(qualityProfile.shadowMapSize, qualityProfile.shadowMapSize);
+      if (sun.shadow.map) sun.shadow.map.dispose();
+      sun.shadow.needsUpdate = true;
+    }
+
+    if (ssaoPassRef.current) {
+      ssaoPassRef.current.kernelRadius = qualityProfile.ssaoKernelRadius;
+      ssaoPassRef.current.minDistance = qualityProfile.ssaoMinDistance;
+      ssaoPassRef.current.maxDistance = qualityProfile.ssaoMaxDistance;
+    }
+  }, [qualityProfile]);
 
   // ─── Grid / Axes visibility ─────────────────────────────────────────
   useEffect(() => {
@@ -370,8 +620,50 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   // ─── SSAO toggle ─────────────────────────────────────────────────
   useEffect(() => {
-    if (ssaoPassRef.current) ssaoPassRef.current.enabled = enableSSAO;
-  }, [enableSSAO]);
+    if (ssaoPassRef.current) ssaoPassRef.current.enabled = enableSSAO && qualityProfile.allowSSAO;
+  }, [enableSSAO, qualityProfile.allowSSAO]);
+
+  // ─── Advanced post-process toggles ──────────────────────────────
+  useEffect(() => {
+    if (taaPassRef.current) {
+      taaPassRef.current.enabled = enableTAA && effectiveQuality !== 'performance';
+      taaPassRef.current.sampleLevel = effectiveQuality === 'ultra' ? 2 : 1;
+    }
+  }, [enableTAA, effectiveQuality]);
+
+  useEffect(() => {
+    if (ssrPassRef.current) {
+      ssrPassRef.current.enabled = enableSSR && effectiveQuality !== 'performance';
+    }
+  }, [enableSSR, effectiveQuality]);
+
+  useEffect(() => {
+    if (csmRef.current) {
+      csmRef.current.fade = true;
+      csmRef.current.lightIntensity = enableCSM ? 1.3 : 0.0;
+    }
+  }, [enableCSM]);
+
+  useEffect(() => {
+    if (enableOcclusionThrottle) return;
+    occlusionCullRef.current = false;
+    sceneRef.current?.traverse(obj => {
+      if (obj.userData?.archflow) {
+        obj.visible = true;
+      }
+    });
+  }, [enableOcclusionThrottle]);
+
+  useEffect(() => {
+    if (skyRef.current) {
+      skyRef.current.visible = enableSky;
+      if (sceneRef.current) {
+        sceneRef.current.fog = enableSky
+          ? new THREE.FogExp2(0x90a4bf, 0.003)
+          : new THREE.FogExp2(0x0a0f15, 0.008);
+      }
+    }
+  }, [enableSky]);
 
   // ─── Section plane ─────────────────────────────────────────────────
   useEffect(() => {
@@ -417,6 +709,41 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     }
     updateCamera();
   }, [updateCamera]);
+
+  const fitSunShadowToModel = useCallback(() => {
+    const scene = sceneRef.current;
+    const sun = scene?.getObjectByName('sun') as THREE.DirectionalLight | null;
+    if (!scene || !sun) return;
+
+    const box = new THREE.Box3();
+    let found = false;
+    scene.traverse(obj => {
+      if (!obj.userData?.archflow) return;
+      if (obj instanceof THREE.Mesh || obj instanceof THREE.Group) {
+        box.expandByObject(obj);
+        found = true;
+      }
+    });
+    if (!found || box.isEmpty()) return;
+
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const radius = Math.max(8, Math.max(size.x, size.z) * 0.7);
+    sun.target.position.set(center.x, 0, center.z);
+    sun.target.updateMatrixWorld();
+
+    sun.shadow.camera.left = -radius;
+    sun.shadow.camera.right = radius;
+    sun.shadow.camera.top = radius;
+    sun.shadow.camera.bottom = -radius;
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = Math.max(80, size.y * 2 + radius);
+    sun.shadow.camera.updateProjectionMatrix();
+    sun.shadow.needsUpdate = true;
+  }, []);
 
   // Orbit controls via mouse
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -829,6 +1156,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   // ─── Sun position control ────────────────────────────────────
   useEffect(() => {
+    if (useGeoSun) return;
     if (!sceneRef.current) return;
     const sun = sceneRef.current.getObjectByName('sun') as THREE.DirectionalLight;
     if (!sun) return;
@@ -845,6 +1173,42 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     // Warm at low angles, cool at high
     const warmth = 1 - Math.sin(altRad);
     sun.color.setRGB(1.0, 0.96 - warmth * 0.1, 0.9 - warmth * 0.2);
+  }, [sunPosition, useGeoSun]);
+
+  useEffect(() => {
+    if (!useGeoSun) return;
+    const latRad = geoSunParams.latitude * (Math.PI / 180);
+    const decl = 23.45 * Math.sin((2 * Math.PI * (284 + geoSunParams.dayOfYear)) / 365);
+    const declRad = decl * (Math.PI / 180);
+    const hourAngle = (geoSunParams.hour - 12) * 15;
+    const hRad = hourAngle * (Math.PI / 180);
+
+    const altitude = Math.asin(
+      Math.sin(latRad) * Math.sin(declRad) +
+      Math.cos(latRad) * Math.cos(declRad) * Math.cos(hRad)
+    );
+
+    const azimuth = Math.atan2(
+      Math.sin(hRad),
+      Math.cos(hRad) * Math.sin(latRad) - Math.tan(declRad) * Math.cos(latRad)
+    );
+
+    const azimuthDeg = ((azimuth * 180) / Math.PI + 180 + 360) % 360;
+    const altitudeDeg = Math.max(2, ((altitude * 180) / Math.PI));
+    setSunPosition({ azimuth: Math.round(azimuthDeg), altitude: Math.round(altitudeDeg) });
+  }, [geoSunParams, useGeoSun]);
+
+  useEffect(() => {
+    if (!sceneRef.current || !skyRef.current) return;
+    const azRad = sunPosition.azimuth * Math.PI / 180;
+    const altRad = sunPosition.altitude * Math.PI / 180;
+    const sunDir = new THREE.Vector3(
+      Math.cos(altRad) * Math.sin(azRad),
+      Math.sin(altRad),
+      Math.cos(altRad) * Math.cos(azRad)
+    );
+    const skyUniforms = (skyRef.current.material as THREE.ShaderMaterial).uniforms;
+    skyUniforms['sunPosition'].value.copy(sunDir);
   }, [sunPosition]);
 
   // ─── Measurement helper ──────────────────────────────────────
@@ -1180,10 +1544,18 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     );
 
     const raycaster = new THREE.Raycaster();
+    (raycaster as any).firstHitOnly = true;
     raycaster.setFromCamera(mouse, cameraRef.current);
 
     const archObjects = sceneRef.current.children.filter(c => c.userData['archflow']);
-    const intersects = raycaster.intersectObjects(archObjects, true);
+    const candidates = archObjects.filter(obj => {
+      const sphere = new THREE.Sphere();
+      const box = new THREE.Box3().setFromObject(obj);
+      if (box.isEmpty()) return false;
+      box.getBoundingSphere(sphere);
+      return raycaster.ray.intersectsSphere(sphere);
+    });
+    const intersects = raycaster.intersectObjects(candidates, true);
     
     // Reset all highlights
     archObjects.forEach(c => {
@@ -1340,13 +1712,104 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   // ─── Generate 3D model ────────────────────────────────────────────
   const handleGenerate3D = async () => {
+    const generationId = nativeGenerationRef.current + 1;
+    nativeGenerationRef.current = generationId;
     setIsGenerating(true);
-    onStatusChange('Rebuilding 3D base model from current floor…');
-    setSceneData(null);
-    buildFromEntities();
-    setHasModel(true);
-    setIsGenerating(false);
-    onStatusChange(`3D base model synced from 2D — ${floor.entities.length} entities`);
+    try {
+      if (sceneData?.scene_id) {
+        try {
+          await invoke('release_3d_scene', { sceneId: sceneData.scene_id });
+        } catch {
+          // Best-effort cache cleanup; generation should continue.
+        }
+      }
+
+      if (useNativeMesher) {
+        onStatusChange('Syncing 3D via native Rust mesher…');
+        const result = await invoke<NativeScenePayload>('convert_to_3d', {
+          floorData: { entities: floor.entities, floor_height: floor.floorHeight },
+        });
+
+        if (nativeGenerationRef.current !== generationId) return;
+
+        if (result && Array.isArray(result.scene_objects)) {
+          const instanceBatches = result.native?.instance_batches || [];
+          const skipObjectIds = new Set<string>();
+          for (const batch of instanceBatches) {
+            for (const inst of batch.instances || []) {
+              skipObjectIds.add(inst.id);
+            }
+          }
+          instancedObjectIdsRef.current = skipObjectIds;
+
+          const firstChunk = Array.isArray(result.first_chunk) && result.first_chunk.length > 0
+            ? result.first_chunk
+            : result.scene_objects;
+          const combinedObjects = [...firstChunk];
+          const totalChunks = Math.max(result.chunk_count || 0, firstChunk.length > 0 ? 1 : 0);
+
+          buildThreeScene({ ...result, scene_objects: firstChunk }, {
+            clearExisting: true,
+            finalize: totalChunks <= 1,
+            skipObjectIds,
+          });
+
+          if (instanceBatches.length > 0) {
+            buildInstanceBatches(instanceBatches);
+          }
+
+          if (totalChunks > 1) {
+            onStatusChange(`Native 3D chunk 1/${totalChunks} loaded…`);
+          }
+
+          for (let chunkIndex = 1; chunkIndex < totalChunks; chunkIndex += 1) {
+            const chunk = await invoke<ChunkPayload>('convert_to_3d_chunk', {
+              sceneId: result.scene_id,
+              chunkIndex,
+              chunkSize: result.chunk_size,
+            });
+
+            if (nativeGenerationRef.current !== generationId) return;
+            if (!chunk || !Array.isArray(chunk.scene_objects)) continue;
+
+            combinedObjects.push(...chunk.scene_objects);
+            buildThreeScene({ scene_objects: chunk.scene_objects } as NativeScenePayload, {
+              clearExisting: false,
+              finalize: chunk.is_final || chunkIndex === totalChunks - 1,
+              skipObjectIds,
+            });
+
+            onStatusChange(`Native 3D chunk ${chunkIndex + 1}/${totalChunks} loaded…`);
+
+            if (chunk.is_final) break;
+          }
+
+          const finalScene = { ...result, scene_objects: combinedObjects, first_chunk: firstChunk };
+          setSceneData(finalScene);
+          setHasModel(combinedObjects.length > 0);
+          onStatusChange(`Native 3D sync complete — ${combinedObjects.length} objects from ${floor.entities.length} source entities`);
+          return;
+        }
+      }
+
+      onStatusChange('Rebuilding 3D base model from current floor…');
+      instancedObjectIdsRef.current.clear();
+      setSceneData(null);
+      buildFromEntities();
+      setHasModel(true);
+      onStatusChange(`3D base model synced from 2D — ${floor.entities.length} entities`);
+    } catch {
+      if (nativeGenerationRef.current !== generationId) return;
+      instancedObjectIdsRef.current.clear();
+      setSceneData(null);
+      buildFromEntities();
+      setHasModel(true);
+      onStatusChange(`Native mesher unavailable, fell back to local renderer — ${floor.entities.length} entities`);
+    } finally {
+      if (nativeGenerationRef.current === generationId) {
+        setIsGenerating(false);
+      }
+    }
   };
 
   // ─── Import glTF/GLB model ────────────────────────────────────────
@@ -1413,6 +1876,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
       scene.remove(c);
       c.traverse(child => {
         if (child instanceof THREE.Mesh) {
+          (child.geometry as any)?.disposeBoundsTree?.();
           child.geometry?.dispose();
           if (child.material instanceof THREE.Material) child.material.dispose();
         }
@@ -1424,12 +1888,17 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const addArchMesh = (geo: THREE.BufferGeometry, material: THREE.Material, id: string, entityType: string) => {
     const scene = sceneRef.current;
     if (!scene) return null;
+    (geo as any).computeBoundsTree?.();
+    if (enableCSM && csmRef.current && material instanceof THREE.MeshStandardMaterial) {
+      csmRef.current.setupMaterial(material);
+    }
     const mesh = new THREE.Mesh(geo, material);
     mesh.castShadow = showShadows;
     mesh.receiveShadow = true;
     mesh.userData['archflow'] = true;
     mesh.userData['id'] = id;
     mesh.userData['entityType'] = entityType;
+    mesh.frustumCulled = true;
     scene.add(mesh);
     entityMeshMap.current.set(id, mesh);
     return mesh;
@@ -1440,6 +1909,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     group.userData['archflow'] = true;
     group.userData['id'] = id;
     group.userData['entityType'] = entityType;
+    group.frustumCulled = true;
     sceneRef.current?.add(group);
     entityMeshMap.current.set(id, group);
     return group;
@@ -2283,6 +2753,11 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
         }
       }
     }
+
+    if (rendererRef.current && showShadows) {
+      rendererRef.current.shadowMap.needsUpdate = true;
+    }
+    fitSunShadowToModel();
   };
 
   useEffect(() => {
@@ -2300,10 +2775,57 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   }, [floor.entities, floor.floorHeight, visibleCategories, showShadows]);
 
   // ─── Build from backend scene data ────────────────────────────
-  const buildThreeScene = (data: Record<string, unknown>) => {
-    clearArchObjects();
-    const objects = data.scene_objects as SceneObject[] || [];
+  const buildInstanceBatches = (batches: InstanceBatchPayload[]) => {
+    const scene = sceneRef.current;
+    if (!scene || batches.length === 0) return;
+
+    for (const batch of batches) {
+      const size = batch.prototype_size;
+      if (!Array.isArray(size) || size.length !== 3) continue;
+      const geo = batch.prototype_type === 'cylinder'
+        ? new THREE.CylinderGeometry(size[0] / 2, size[0] / 2, size[1], 16)
+        : new THREE.BoxGeometry(size[0], size[1], size[2]);
+      (geo as any).computeBoundsTree?.();
+
+      const count = batch.instances?.length || 0;
+      if (count === 0) {
+        geo.dispose();
+        continue;
+      }
+
+      const instancedMaterial = makeMaterial(batch.material || 'concrete');
+      if (enableCSM && csmRef.current && instancedMaterial instanceof THREE.MeshStandardMaterial) {
+        csmRef.current.setupMaterial(instancedMaterial);
+      }
+      const iMesh = new THREE.InstancedMesh(geo, instancedMaterial, count);
+      iMesh.castShadow = showShadows;
+      iMesh.receiveShadow = true;
+      iMesh.userData['archflow'] = true;
+      iMesh.userData['id'] = `inst_${batch.prototype_type}_${Math.random().toString(36).slice(2, 7)}`;
+      iMesh.userData['entityType'] = `instanced_${batch.prototype_type}`;
+
+      const mat = new THREE.Matrix4();
+      batch.instances.forEach((inst, idx) => {
+        if (Array.isArray(inst.matrix) && inst.matrix.length === 16) {
+          mat.fromArray(inst.matrix);
+          iMesh.setMatrixAt(idx, mat);
+        }
+      });
+      iMesh.instanceMatrix.needsUpdate = true;
+      scene.add(iMesh);
+    }
+  };
+
+  const buildThreeScene = (
+    data: Pick<NativeScenePayload, 'scene_objects'>,
+    options?: { clearExisting?: boolean; finalize?: boolean; skipObjectIds?: Set<string> }
+  ) => {
+    if (options?.clearExisting !== false) {
+      clearArchObjects();
+    }
+    const objects = data.scene_objects || [];
     objects.forEach(obj => {
+      if (options?.skipObjectIds?.has(obj.id)) return;
       const [w, h, d] = obj.size;
       const geo = obj.type === 'cylinder'
         ? new THREE.CylinderGeometry(w / 2, w / 2, h, 16)
@@ -2315,6 +2837,9 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
         if (obj.rotation_y) mesh.rotation.y = obj.rotation_y;
       }
     });
+    if (options?.finalize !== false) {
+      fitSunShadowToModel();
+    }
   };
 
   // ─── Reapply render mode ────────────────────────────────────────
@@ -2332,9 +2857,10 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     });
     // Realistic mode — boost exposure
     if (rendererRef.current) {
-      rendererRef.current.toneMappingExposure = renderMode === 'realistic' ? 1.4 : 1.0;
+      const modeExposure = renderMode === 'realistic' ? qualityProfile.exposure + 0.2 : qualityProfile.exposure;
+      rendererRef.current.toneMappingExposure = modeExposure;
     }
-  }, [renderMode, hasModel]);
+  }, [renderMode, hasModel, qualityProfile.exposure]);
 
   // ─── Section / Elevation generation ────────────────────────────
   const generateSection = useCallback(() => {
@@ -2754,13 +3280,34 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
         <div className="tool-group">
           <div className="tool-group-label" style={{textAlign:'left',paddingLeft:12}}>Sun Study</div>
           <div style={{ padding: '2px 12px' }}>
+             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4, cursor: 'pointer' }}>
+          <input type="checkbox" checked={useGeoSun} onChange={e => setUseGeoSun(e.target.checked)} /> Geolocated Sun
+             </label>
+             {useGeoSun && (
+          <>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>Latitude: {geoSunParams.latitude.toFixed(2)}°</div>
+            <input type="range" min={-60} max={60} step={0.5} value={geoSunParams.latitude}
+              onChange={e => setGeoSunParams(p => ({ ...p, latitude: parseFloat(e.target.value) }))}
+              style={{ width: '100%' }} />
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, marginTop: 4 }}>Day: {geoSunParams.dayOfYear}</div>
+            <input type="range" min={1} max={365} step={1} value={geoSunParams.dayOfYear}
+              onChange={e => setGeoSunParams(p => ({ ...p, dayOfYear: parseInt(e.target.value) }))}
+              style={{ width: '100%' }} />
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, marginTop: 4 }}>Hour: {geoSunParams.hour.toFixed(1)}</div>
+            <input type="range" min={5} max={19} step={0.5} value={geoSunParams.hour}
+              onChange={e => setGeoSunParams(p => ({ ...p, hour: parseFloat(e.target.value) }))}
+              style={{ width: '100%' }} />
+          </>
+             )}
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>Azimuth: {sunPosition.azimuth}°</div>
             <input type="range" min={0} max={360} step={5} value={sunPosition.azimuth}
                    onChange={e => setSunPosition(p => ({ ...p, azimuth: parseInt(e.target.value) }))}
+               disabled={useGeoSun}
                    style={{ width: '100%' }} />
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, marginTop: 4 }}>Altitude: {sunPosition.altitude}°</div>
             <input type="range" min={5} max={90} step={5} value={sunPosition.altitude}
                    onChange={e => setSunPosition(p => ({ ...p, altitude: parseInt(e.target.value) }))}
+               disabled={useGeoSun}
                    style={{ width: '100%' }} />
           </div>
         </div>
@@ -2772,6 +3319,10 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
           <label className="sidebar-btn" style={{ cursor: 'pointer' }}>
             <input type="checkbox" checked={snapToGrid} onChange={e => setSnapToGrid(e.target.checked)} style={{ marginRight: 4 }} />
             <span>Snap to Grid ({gridSnapSize}mm)</span>
+          </label>
+          <label className="sidebar-btn" style={{ cursor: 'pointer' }}>
+            <input type="checkbox" checked={useNativeMesher} onChange={e => setUseNativeMesher(e.target.checked)} style={{ marginRight: 4 }} />
+            <span>Use Native Rust Mesher</span>
           </label>
         </div>
       </div>
@@ -2831,6 +3382,22 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
                 {m.charAt(0).toUpperCase() + m.slice(1)}
               </button>
             ))}
+            <div style={{ marginTop: 4, marginBottom: 4 }}>
+              <div className="label" style={{ marginBottom: 4 }}>Quality</div>
+              <select
+                value={renderQuality}
+                onChange={e => setRenderQuality(e.target.value as RenderQuality)}
+                style={{ width: '100%', fontSize: 11 }}
+              >
+                <option value="auto">Auto</option>
+                <option value="ultra">Ultra</option>
+                <option value="balanced">Balanced</option>
+                <option value="performance">Performance</option>
+              </select>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+                Effective: {effectiveQuality}
+              </div>
+            </div>
             <div className="divider" />
             <div className="label" style={{ marginBottom: 4 }}>Display</div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
@@ -2845,6 +3412,32 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
               <input type="checkbox" checked={enableSSAO} onChange={e => setEnableSSAO(e.target.checked)} /> Ambient Occlusion
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableTAA} onChange={e => setEnableTAA(e.target.checked)} /> Temporal AA
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableSSR} onChange={e => setEnableSSR(e.target.checked)} /> Screen-Space Reflections
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableCSM} onChange={e => setEnableCSM(e.target.checked)} /> Cascaded Shadows
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableSky} onChange={e => setEnableSky(e.target.checked)} /> Physical Sky
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableGovernor} onChange={e => setEnableGovernor(e.target.checked)} /> Adaptive Governor
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: 2 }}>
+              <input type="checkbox" checked={enableOcclusionThrottle} onChange={e => setEnableOcclusionThrottle(e.target.checked)} /> Occlusion Throttle
+            </label>
+            {!qualityProfile.allowSSAO && (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>
+                SSAO disabled for performance profile
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>
+              Frame: {frameTimeMs.toFixed(1)}ms {governorScaleRef.current < 0.99 ? `(scale ${governorScaleRef.current.toFixed(2)})` : ''}
+            </div>
             <div className="divider" />
             <button className="btn primary" style={{ width: '100%', fontSize: 11 }}
               onClick={handleGenerate3D} disabled={isGenerating}>

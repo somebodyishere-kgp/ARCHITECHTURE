@@ -17,6 +17,8 @@ pub fn run() {
             commands::export_svg,
             commands::generate_floor_plan_ai,
             commands::convert_to_3d,
+            commands::convert_to_3d_chunk,
+            commands::release_3d_scene,
             commands::get_building_codes,
             commands::import_ifc,
             commands::export_ifc,

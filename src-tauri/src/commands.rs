@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::process::{Command, Stdio};
-use std::io::{Write, Read};
+use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn get_bridges_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -68,6 +71,117 @@ pub struct ProjectData {
     pub manifest: serde_json::Value,
     pub floors: Vec<serde_json::Value>,
     pub sheets: Vec<serde_json::Value>,
+}
+static SCENE_CACHE: OnceLock<Mutex<HashMap<String, Vec<serde_json::Value>>>> = OnceLock::new();
+
+fn get_scene_cache() -> &'static Mutex<HashMap<String, Vec<serde_json::Value>>> {
+    SCENE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn make_scene_id() -> String {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("scene_{}", ms)
+}
+
+fn build_instance_batches(scene_objects: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut groups: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+
+    for obj in scene_objects {
+        let obj_type = obj["type"].as_str().unwrap_or("box");
+        let material = obj["material"].as_str().unwrap_or("default");
+        let size = obj["size"].as_array().cloned().unwrap_or_else(|| vec![]);
+        let key = format!("{}:{}:{:?}", obj_type, material, size);
+        groups.entry(key).or_default().push(obj.clone());
+    }
+
+    let mut batches = Vec::new();
+    for (_k, objs) in groups {
+        if objs.len() < 2 {
+            continue;
+        }
+        let first = &objs[0];
+        let prototype_type = first["type"].as_str().unwrap_or("box").to_string();
+        let material = first["material"].as_str().unwrap_or("default").to_string();
+        let color = first["color"].as_str().unwrap_or("#cccccc").to_string();
+        let prototype_size = first["size"].clone();
+
+        let mut instances = Vec::new();
+        for obj in objs {
+            let pos = obj["position"].as_array().cloned().unwrap_or_else(|| vec![]);
+            let rot_y = obj["rotation_y"].as_f64().unwrap_or(0.0);
+            let c = rot_y.cos();
+            let s = rot_y.sin();
+            let px = pos.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let py = pos.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let pz = pos.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let matrix = vec![
+                c, 0.0, s, px,
+                0.0, 1.0, 0.0, py,
+                -s, 0.0, c, pz,
+                0.0, 0.0, 0.0, 1.0,
+            ];
+            instances.push(serde_json::json!({
+                "id": obj["id"],
+                "matrix": matrix,
+            }));
+        }
+
+        batches.push(serde_json::json!({
+            "prototype_type": prototype_type,
+            "prototype_size": prototype_size,
+            "material": material,
+            "color": color,
+            "instances": instances,
+        }));
+    }
+
+    batches
+}
+
+fn chunk_bounds(chunk: &[serde_json::Value]) -> serde_json::Value {
+    if chunk.is_empty() {
+        return serde_json::json!({
+            "min": [0.0, 0.0, 0.0],
+            "max": [0.0, 0.0, 0.0],
+            "center": [0.0, 0.0, 0.0],
+        });
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut min_z = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut max_z = f64::NEG_INFINITY;
+
+    for obj in chunk {
+        let pos = obj["position"].as_array();
+        let size = obj["size"].as_array();
+        if let (Some(pos), Some(size)) = (pos, size) {
+            let x = pos.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = pos.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let z = pos.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let w = size.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0) * 0.5;
+            let h = size.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0) * 0.5;
+            let d = size.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0) * 0.5;
+
+            min_x = min_x.min(x - w);
+            min_y = min_y.min(y - h);
+            min_z = min_z.min(z - d);
+            max_x = max_x.max(x + w);
+            max_y = max_y.max(y + h);
+            max_z = max_z.max(z + d);
+        }
+    }
+
+    serde_json::json!({
+        "min": [min_x, min_y, min_z],
+        "max": [max_x, max_y, max_z],
+        "center": [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5],
+    })
 }
 
 /// Simple greeting for dev/test
@@ -412,9 +526,34 @@ pub async fn convert_to_3d(floor_data: serde_json::Value) -> Result<serde_json::
         "material": "concrete",
         "color": "#d1ccbf"
     }));
-    
+
+    let scene_id = make_scene_id();
+    if let Ok(mut cache) = get_scene_cache().lock() {
+        cache.insert(scene_id.clone(), geometry_objects.clone());
+    }
+
+    let chunk_size: usize = 120;
+    let chunk_count = if geometry_objects.is_empty() {
+        0
+    } else {
+        (geometry_objects.len() + chunk_size - 1) / chunk_size
+    };
+    let first_chunk: Vec<serde_json::Value> = geometry_objects.iter().take(chunk_size).cloned().collect();
+    let instance_batches = build_instance_batches(&geometry_objects);
+
     Ok(serde_json::json!({
+        "scene_id": scene_id,
         "scene_objects": geometry_objects,
+        "chunk_count": chunk_count,
+        "chunk_size": chunk_size,
+        "first_chunk": first_chunk,
+        "native": {
+            "mesh_batches": [],
+            "instance_batches": instance_batches,
+            "metadata": {
+                "generator": "rust-native-preview-v2"
+            }
+        },
         "ambient_light": {"color": "#ffffff", "intensity": 0.5},
         "directional_light": {
             "color": "#fff5e6",
@@ -422,6 +561,50 @@ pub async fn convert_to_3d(floor_data: serde_json::Value) -> Result<serde_json::
             "position": [10.0, 20.0, 10.0]
         },
         "camera": {"position": [10.0, 8.0, 10.0], "target": [0.0, 1.5, 0.0]}
+    }))
+}
+
+#[tauri::command]
+pub async fn convert_to_3d_chunk(scene_id: String, chunk_index: usize, chunk_size: Option<usize>) -> Result<serde_json::Value, String> {
+    let cache = get_scene_cache().lock().map_err(|e| e.to_string())?;
+    let scene_objects = cache
+        .get(&scene_id)
+        .ok_or_else(|| format!("Scene {} not found in cache", scene_id))?;
+
+    let size = chunk_size.unwrap_or(120).max(1);
+    let start = chunk_index.saturating_mul(size);
+    if start >= scene_objects.len() {
+        return Ok(serde_json::json!({
+            "scene_id": scene_id,
+            "chunk_index": chunk_index,
+            "scene_objects": [],
+            "is_final": true,
+            "bounds": chunk_bounds(&[])
+        }));
+    }
+
+    let end = (start + size).min(scene_objects.len());
+    let chunk: Vec<serde_json::Value> = scene_objects[start..end].to_vec();
+    let is_final = end >= scene_objects.len();
+
+    Ok(serde_json::json!({
+        "scene_id": scene_id,
+        "chunk_index": chunk_index,
+        "chunk_size": size,
+        "scene_objects": chunk,
+        "is_final": is_final,
+        "bounds": chunk_bounds(&scene_objects[start..end])
+    }))
+}
+
+#[tauri::command]
+pub async fn release_3d_scene(scene_id: String) -> Result<serde_json::Value, String> {
+    let mut cache = get_scene_cache().lock().map_err(|e| e.to_string())?;
+    let removed = cache.remove(&scene_id).is_some();
+    Ok(serde_json::json!({
+        "scene_id": scene_id,
+        "released": removed,
+        "cache_size": cache.len()
     }))
 }
 
@@ -599,3 +782,5 @@ pub async fn export_pdf(floor: serde_json::Value, out_path: String, paper_size: 
         Err(res["error"].as_str().unwrap_or("PDF export failed").to_string())
     }
 }
+
+
