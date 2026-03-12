@@ -1,7 +1,9 @@
 import {
   ADFProject,
+  FloorPlan,
   DesignBranchGraph,
   DesignBranchNode,
+  AnyEntity,
   ProjectBranchSnapshot,
   uid,
 } from './adf';
@@ -21,6 +23,25 @@ export interface BranchComparisonResult {
   totalEntitiesB: number;
   totalDelta: number;
   floors: BranchComparisonFloorDelta[];
+}
+
+export type BranchMergeStrategy = 'prefer_source' | 'prefer_target';
+
+export interface BranchMergeConflict {
+  floorId: string;
+  floorName: string;
+  entityId: string;
+  sourceType: string;
+  targetType: string;
+}
+
+export interface BranchMergePreview {
+  sourceBranchId: string;
+  targetBranchId: string;
+  addedCount: number;
+  updatedCount: number;
+  conflictCount: number;
+  conflicts: BranchMergeConflict[];
 }
 
 function deepClone<T>(value: T): T {
@@ -134,13 +155,150 @@ export function switchToBranch(project: ADFProject, branchId: string): ADFProjec
   };
 }
 
-function resolveSnapshot(project: ADFProject, nodeId: string): ProjectBranchSnapshot | null {
+export function resolveSnapshot(project: ADFProject, nodeId: string): ProjectBranchSnapshot | null {
   const graph = ensureGraph(project);
   const node = graph.nodes.find(n => n.id === nodeId);
   if (!node) return null;
   if (node.snapshot) return node.snapshot;
   if (graph.activeBranchId === nodeId) return captureBranchSnapshot(project);
   return null;
+}
+
+function getFloorMap(snapshot: ProjectBranchSnapshot): Map<string, FloorPlan> {
+  return new Map(snapshot.floors.map(floor => [floor.id, deepClone(floor)]));
+}
+
+function entityConflict(a: AnyEntity, b: AnyEntity): boolean {
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
+export function previewBranchMerge(
+  project: ADFProject,
+  sourceBranchId: string,
+  targetBranchId: string
+): BranchMergePreview {
+  const source = resolveSnapshot(project, sourceBranchId);
+  const target = resolveSnapshot(project, targetBranchId);
+
+  if (!source || !target) {
+    throw new Error('Cannot preview merge because source or target snapshot is missing.');
+  }
+
+  const sourceFloors = getFloorMap(source);
+  const targetFloors = getFloorMap(target);
+
+  let addedCount = 0;
+  let updatedCount = 0;
+  const conflicts: BranchMergeConflict[] = [];
+
+  sourceFloors.forEach((sourceFloor, floorId) => {
+    const targetFloor = targetFloors.get(floorId);
+    if (!targetFloor) {
+      addedCount += sourceFloor.entities.length;
+      return;
+    }
+
+    const sourceEntities = new Map(sourceFloor.entities.map(entity => [entity.id, entity]));
+    const targetEntities = new Map(targetFloor.entities.map(entity => [entity.id, entity]));
+
+    sourceEntities.forEach((sourceEntity, entityId) => {
+      const targetEntity = targetEntities.get(entityId);
+      if (!targetEntity) {
+        addedCount += 1;
+        return;
+      }
+      if (entityConflict(sourceEntity, targetEntity)) {
+        updatedCount += 1;
+        conflicts.push({
+          floorId,
+          floorName: targetFloor.name,
+          entityId,
+          sourceType: sourceEntity.type,
+          targetType: targetEntity.type,
+        });
+      }
+    });
+  });
+
+  return {
+    sourceBranchId,
+    targetBranchId,
+    addedCount,
+    updatedCount,
+    conflictCount: conflicts.length,
+    conflicts,
+  };
+}
+
+export function applyBranchMerge(
+  project: ADFProject,
+  sourceBranchId: string,
+  targetBranchId: string,
+  strategy: BranchMergeStrategy
+): { project: ADFProject; preview: BranchMergePreview } {
+  const preview = previewBranchMerge(project, sourceBranchId, targetBranchId);
+  const source = resolveSnapshot(project, sourceBranchId);
+  const target = resolveSnapshot(project, targetBranchId);
+
+  if (!source || !target) {
+    throw new Error('Cannot apply merge because source or target snapshot is missing.');
+  }
+
+  const sourceFloors = getFloorMap(source);
+  const mergedFloors = getFloorMap(target);
+
+  sourceFloors.forEach((sourceFloor, floorId) => {
+    const currentFloor = mergedFloors.get(floorId);
+    if (!currentFloor) {
+      mergedFloors.set(floorId, deepClone(sourceFloor));
+      return;
+    }
+
+    const mergedEntityMap = new Map(currentFloor.entities.map(entity => [entity.id, deepClone(entity)]));
+    sourceFloor.entities.forEach(sourceEntity => {
+      const existing = mergedEntityMap.get(sourceEntity.id);
+      if (!existing) {
+        mergedEntityMap.set(sourceEntity.id, deepClone(sourceEntity));
+        return;
+      }
+
+      if (!entityConflict(existing, sourceEntity)) return;
+      if (strategy === 'prefer_source') {
+        mergedEntityMap.set(sourceEntity.id, deepClone(sourceEntity));
+      }
+    });
+
+    mergedFloors.set(floorId, {
+      ...currentFloor,
+      entities: Array.from(mergedEntityMap.values()),
+    });
+  });
+
+  const graph = ensureGraph(project);
+  const nodes = graph.nodes.map(node => {
+    if (node.id !== targetBranchId) return node;
+    return {
+      ...node,
+      snapshot: {
+        ...target,
+        capturedAt: new Date().toISOString(),
+        floors: Array.from(mergedFloors.values()),
+      },
+    };
+  });
+
+  const targetIsActive = graph.activeBranchId === targetBranchId;
+  return {
+    project: {
+      ...project,
+      ...(targetIsActive ? { floors: Array.from(mergedFloors.values()) } : {}),
+      branchGraph: {
+        ...graph,
+        nodes,
+      },
+    },
+    preview,
+  };
 }
 
 export function compareBranches(project: ADFProject, branchAId: string, branchBId: string): BranchComparisonResult {

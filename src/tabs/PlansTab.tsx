@@ -47,7 +47,7 @@ import {
   // Data model additions
   DimStyle, defaultDimStyles, TextStyle, defaultTextStyles,
   HatchPattern, defaultHatchPatterns, LinetypeDefinition, defaultLinetypes,
-  Sheet, Viewport, TitleBlock, PAPER_SIZES, ACI_COLORS, UCS, WCS,
+  Sheet, Viewport, TitleBlock, PAPER_SIZES, ACI_COLORS, UCS, WCS, ConstraintRuleSeverity,
 } from '../lib/adf';
 import { invoke } from '@tauri-apps/api/core';
 import LayerManager from '../components/LayerManager';
@@ -687,6 +687,7 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const [cmdText, setCmdText]       = useState('');
   const [cmdSuggestIndex, setCmdSuggestIndex] = useState(0);
   const [cmdHistory, setCmdHistory] = useState<string[]>(['ArchFlow Command Line ready. Type a command (e.g. line, wall, trim, offset).']);
+  const [constraintSeverityFilter, setConstraintSeverityFilter] = useState<'all' | ConstraintRuleSeverity>('all');
 
   // ── Dynamic Input ───────────────────────────────────────────────────────
   const [dynamicInputOn, setDynamicInputOn]   = useState(true);
@@ -6671,6 +6672,12 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
   const selectedObjects = floor.entities.filter(e => selectedIds.includes(e.id));
   const dependencyReport = floor.dependencyMetadata?.lastReport;
   const constraintReport = floor.dependencyMetadata?.lastConstraintReport;
+  const filteredConstraintNodes = (constraintReport?.nodes || []).filter(node => (
+    constraintSeverityFilter === 'all' || node.severity === constraintSeverityFilter
+  ));
+  const filteredConstraintEdges = (constraintReport?.edges || []).filter(edge => (
+    constraintSeverityFilter === 'all' || edge.severity === constraintSeverityFilter
+  ));
 
   const selectTool = useCallback((toolId: Tool) => {
     setActiveTool(toolId);
@@ -7404,6 +7411,60 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
               </>
             ) : (
               <div style={{ color: 'var(--text-muted)' }}>Constraint evaluator has not run yet.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="right-panel-section">
+          <div className="right-panel-header">
+            <Hash size={12} />
+            <span>Constraint Graph Explorer</span>
+          </div>
+          <div style={{ padding: 10, fontSize: 10, color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+              {(['all', 'info', 'warning', 'error'] as const).map(level => (
+                <button
+                  key={level}
+                  onClick={() => setConstraintSeverityFilter(level)}
+                  style={{
+                    border: '1px solid var(--border)',
+                    background: constraintSeverityFilter === level ? 'var(--accent-dim)' : 'var(--bg-elevated)',
+                    color: constraintSeverityFilter === level ? 'var(--accent)' : 'var(--text-secondary)',
+                    borderRadius: 3,
+                    padding: '1px 4px',
+                    fontSize: 9,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {level.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            {constraintReport ? (
+              <>
+                <div style={{ marginBottom: 4 }}>Nodes ({filteredConstraintNodes.length})</div>
+                <div style={{ maxHeight: 70, overflowY: 'auto', display: 'grid', gap: 2, marginBottom: 6 }}>
+                  {filteredConstraintNodes.slice(0, 12).map(node => (
+                    <div key={node.id} style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px' }}>
+                      <span style={{ color: 'var(--text-primary)' }}>{node.id}</span>
+                      <span style={{ color: 'var(--text-muted)' }}> ({node.type}) [{node.severity}]</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginBottom: 4 }}>Edges ({filteredConstraintEdges.length})</div>
+                <div style={{ maxHeight: 70, overflowY: 'auto', display: 'grid', gap: 2 }}>
+                  {filteredConstraintEdges.slice(0, 12).map((edge, i) => (
+                    <div key={`${edge.from}-${edge.to}-${i}`} style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px' }}>
+                      <span style={{ color: 'var(--text-primary)' }}>{edge.from}</span>
+                      <span style={{ color: 'var(--text-muted)' }}> -&gt; {edge.to} ({edge.kind}, {edge.severity})</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-muted)' }}>Constraint graph data not available yet.</div>
             )}
           </div>
         </div>

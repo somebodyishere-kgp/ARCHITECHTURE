@@ -831,11 +831,26 @@ export interface ConstraintRuleWarning {
   ruleId?: string;
 }
 
+export interface ConstraintGraphNode {
+  id: string;
+  type: string;
+  severity: ConstraintRuleSeverity;
+}
+
+export interface ConstraintGraphEdge {
+  from: string;
+  to: string;
+  kind: ConstraintRuleKind;
+  severity: ConstraintRuleSeverity;
+}
+
 export interface ConstraintRuleReport {
   timestamp: string;
   nodeCount: number;
   edgeCount: number;
   warningCount: number;
+  nodes: ConstraintGraphNode[];
+  edges: ConstraintGraphEdge[];
   warnings: ConstraintRuleWarning[];
 }
 

@@ -5,7 +5,7 @@ import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-rea
 import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { propagateFloorDependencies } from './lib/systemGraph';
-import { captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, switchToBranch } from './lib/branchGraph';
+import { applyBranchMerge, BranchMergePreview, captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, previewBranchMerge, switchToBranch } from './lib/branchGraph';
 import { evaluateConstraintRuleGraph } from './lib/constraintRules';
 import AIChat from './components/AIChat';
 import './App.css';
@@ -40,6 +40,9 @@ export default function App() {
   const [timelineSpeed, setTimelineSpeed] = useState(1);
   const [selectedTrackId, setSelectedTrackId] = useState('');
   const [compareBaseBranchId, setCompareBaseBranchId] = useState('');
+  const [mergeSourceBranchId, setMergeSourceBranchId] = useState('');
+  const [mergePreview, setMergePreview] = useState<BranchMergePreview | null>(null);
+  const [showTimelineEditor, setShowTimelineEditor] = useState(false);
   const lastPlaybackEventRef = useRef<string | null>(null);
 
   const activeFloor = project.floors[activeFloorIndex];
@@ -177,6 +180,19 @@ export default function App() {
   }, [project, compareBaseBranchId]);
 
   useEffect(() => {
+    const graph = ensureGraph(project);
+    const activeId = graph.activeBranchId;
+    const candidates = graph.nodes.filter(node => node.id !== activeId);
+    if (candidates.length === 0) {
+      if (mergeSourceBranchId) setMergeSourceBranchId('');
+      return;
+    }
+    if (!mergeSourceBranchId || !candidates.some(node => node.id === mergeSourceBranchId)) {
+      setMergeSourceBranchId(candidates[0].id);
+    }
+  }, [project, mergeSourceBranchId]);
+
+  useEffect(() => {
     const activeTime = project.timeline?.activeTime || 0;
     const tracks = project.timeline?.tracks || [];
     const elapsed = tracks
@@ -296,6 +312,53 @@ export default function App() {
     setStatusMsg('Captured snapshot for active branch');
   }, [updateProject]);
 
+  const handlePreviewMerge = useCallback(() => {
+    const graph = ensureGraph(project);
+    const targetBranchId = graph.activeBranchId;
+    if (!mergeSourceBranchId) {
+      setStatusMsg('Select a source branch for merge preview');
+      return;
+    }
+    if (mergeSourceBranchId === targetBranchId) {
+      setStatusMsg('Source and target branches must be different');
+      return;
+    }
+
+    try {
+      const preview = previewBranchMerge(project, mergeSourceBranchId, targetBranchId);
+      setMergePreview(preview);
+      setStatusMsg(`Merge preview: +${preview.addedCount}, ~${preview.updatedCount}, conflicts ${preview.conflictCount}`);
+    } catch (err) {
+      setStatusMsg(`Merge preview failed: ${err}`);
+    }
+  }, [mergeSourceBranchId, project]);
+
+  const handleApplyMerge = useCallback((strategy: 'prefer_source' | 'prefer_target') => {
+    const graph = ensureGraph(project);
+    const targetBranchId = graph.activeBranchId;
+    if (!mergeSourceBranchId) {
+      setStatusMsg('Select a source branch for merge apply');
+      return;
+    }
+
+    try {
+      let appliedPreview: BranchMergePreview | null = null;
+      updateProject(prev => {
+        const result = applyBranchMerge(prev, mergeSourceBranchId, targetBranchId, strategy);
+        appliedPreview = result.preview;
+        return result.project;
+      });
+      if (appliedPreview) {
+        setMergePreview(appliedPreview);
+        setStatusMsg(`Merge applied (${strategy}): ${appliedPreview.conflictCount} conflict(s)`);
+      } else {
+        setStatusMsg(`Merge applied (${strategy})`);
+      }
+    } catch (err) {
+      setStatusMsg(`Merge apply failed: ${err}`);
+    }
+  }, [mergeSourceBranchId, project, updateProject]);
+
   const handleAddTimelineTrack = useCallback(() => {
     const rawName = prompt('Timeline track name', `Track ${Math.max(1, (project.timeline?.tracks.length || 0) + 1)}`);
     if (!rawName) return;
@@ -368,6 +431,78 @@ export default function App() {
     });
     setStatusMsg(`Timeline event added: ${eventType} @ T${parsedTime.toFixed(1)} d`);
   }, [activeFloor, project.timeline?.activeTime, selectedTrackId, updateProject]);
+
+  const handleDeleteTimelineEvent = useCallback((eventId: string) => {
+    if (!selectedTrackId) return;
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: timeline.tracks.map(track => (
+            track.id !== selectedTrackId
+              ? track
+              : { ...track, events: track.events.filter(event => event.id !== eventId) }
+          )),
+        },
+      };
+    });
+    setStatusMsg('Timeline event deleted');
+  }, [selectedTrackId, updateProject]);
+
+  const handleEditTimelineEvent = useCallback((eventId: string) => {
+    if (!selectedTrackId) return;
+    const selectedTrack = (project.timeline?.tracks || []).find(track => track.id === selectedTrackId);
+    const target = selectedTrack?.events.find(event => event.id === eventId);
+    if (!target) return;
+
+    const nextType = (prompt('Event type', target.type) || '').trim();
+    if (!nextType) return;
+    const nextTimeRaw = prompt('Event time (days)', target.time.toFixed(1));
+    if (!nextTimeRaw) return;
+    const nextTime = Number(nextTimeRaw);
+    if (!Number.isFinite(nextTime) || nextTime < 0) {
+      setStatusMsg('Invalid event time');
+      return;
+    }
+
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: timeline.tracks.map(track => (
+            track.id !== selectedTrackId
+              ? track
+              : {
+                  ...track,
+                  events: track.events
+                    .map(event => event.id === eventId ? { ...event, type: nextType, time: nextTime } : event)
+                    .sort((a, b) => a.time - b.time),
+                }
+          )),
+        },
+      };
+    });
+    setStatusMsg(`Timeline event updated: ${nextType}`);
+  }, [project.timeline?.tracks, selectedTrackId, updateProject]);
+
+  const handleJumpToTimelineEvent = useCallback((time: number) => {
+    updateProject(prev => ({
+      ...prev,
+      timeline: {
+        ...(prev.timeline || { activeTime: 0, tracks: [] }),
+        activeTime: time,
+      },
+    }));
+    setIsTimelinePlaying(false);
+    setStatusMsg(`Jumped to T${time.toFixed(1)} d`);
+  }, [updateProject]);
+
+  const selectedTrack = (project.timeline?.tracks || []).find(track => track.id === selectedTrackId) || null;
+  const selectedTrackEvents = selectedTrack ? [...selectedTrack.events].sort((a, b) => a.time - b.time) : [];
 
   const handleExportDXF = async () => {
     try {
@@ -535,6 +670,20 @@ export default function App() {
           <button className="btn ghost" onClick={handleCreateBranch} title="Create branch snapshot">Branch+</button>
           <button className="btn ghost" onClick={handleCaptureActiveBranchSnapshot} title="Capture snapshot">Snapshot</button>
           <button className="btn ghost" onClick={handleCompareActiveBranch} title="Compare active branch">Compare</button>
+          <select
+            value={mergeSourceBranchId}
+            onChange={e => setMergeSourceBranchId(e.target.value)}
+            title="Merge source"
+          >
+            {(project.branchGraph?.nodes || [])
+              .filter(node => node.id !== project.branchGraph?.activeBranchId)
+              .map(node => (
+                <option key={node.id} value={node.id}>{node.name}</option>
+              ))}
+          </select>
+          <button className="btn ghost" onClick={handlePreviewMerge} title="Preview merge">Merge Preview</button>
+          <button className="btn ghost" onClick={() => handleApplyMerge('prefer_source')} title="Apply merge preferring source">Apply Src</button>
+          <button className="btn ghost" onClick={() => handleApplyMerge('prefer_target')} title="Apply merge preferring target">Apply Tgt</button>
         </div>
 
         <div className="timeline-controls">
@@ -575,6 +724,7 @@ export default function App() {
           </select>
           <button className="btn ghost" onClick={handleAddTimelineTrack} title="Create track">Track+</button>
           <button className="btn ghost" onClick={handleAddTimelineEvent} title="Add event">Event+</button>
+          <button className="btn ghost" onClick={() => setShowTimelineEditor(v => !v)} title="Toggle timeline editor">Editor</button>
           <span className="timeline-time">T {Number(project.timeline?.activeTime || 0).toFixed(1)} d</span>
         </div>
       </div>
@@ -699,6 +849,54 @@ export default function App() {
             {activeTab === 'keys' && <KeybindingsTab />}
           </Suspense>
         </div>
+
+        {showTimelineEditor && (
+          <div className="timeline-editor-panel">
+            <div className="timeline-editor-header">
+              <strong>Timeline Editor</strong>
+              <button className="btn ghost" onClick={() => setShowTimelineEditor(false)}>Close</button>
+            </div>
+
+            <div className="timeline-editor-controls">
+              <label>Track</label>
+              <select value={selectedTrackId} onChange={e => setSelectedTrackId(e.target.value)}>
+                {(project.timeline?.tracks || []).map(track => (
+                  <option key={track.id} value={track.id}>{track.name} ({track.kind})</option>
+                ))}
+              </select>
+              <div className="timeline-editor-actions">
+                <button className="btn ghost" onClick={handleAddTimelineTrack}>Add Track</button>
+                <button className="btn ghost" onClick={handleAddTimelineEvent}>Add Event</button>
+              </div>
+            </div>
+
+            {mergePreview && (
+              <div className="merge-preview-box">
+                Merge Preview: +{mergePreview.addedCount}, ~{mergePreview.updatedCount}, conflicts {mergePreview.conflictCount}
+              </div>
+            )}
+
+            <div className="timeline-event-list">
+              {selectedTrackEvents.length === 0 ? (
+                <div className="timeline-empty">No events on this track.</div>
+              ) : (
+                selectedTrackEvents.map(event => (
+                  <div key={event.id} className="timeline-event-row">
+                    <div className="timeline-event-main">
+                      <span className="timeline-event-time">T {event.time.toFixed(1)}</span>
+                      <span className="timeline-event-type">{event.type}</span>
+                    </div>
+                    <div className="timeline-event-actions">
+                      <button className="btn ghost" onClick={() => handleJumpToTimelineEvent(event.time)}>Jump</button>
+                      <button className="btn ghost" onClick={() => handleEditTimelineEvent(event.id)}>Edit</button>
+                      <button className="btn ghost" onClick={() => handleDeleteTimelineEvent(event.id)}>Delete</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
 
         {/* AI Chat Panel */}
         {showAI && (
