@@ -25,9 +25,8 @@ pub fn run() {
             commands::ifc_spatial_query,
             commands::ifc_diff,
             commands::ifc_clash_detection,
-            commands::export_svg,
-            commands::import_dxf,
             commands::export_pdf,
+            commands::perform_geom_op,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
