@@ -143,6 +143,26 @@ interface SectionResult {
   clipPlane?: { normal: THREE.Vector3; constant: number };
 }
 
+interface ViewPreset {
+  id: string;
+  name: string;
+  cameraPosition: [number, number, number];
+  target: [number, number, number];
+  renderMode: 'solid' | 'wireframe' | 'clay' | 'realistic' | 'xray';
+  renderQuality: RenderQuality;
+  sunPosition: { azimuth: number; altitude: number };
+}
+
+type QuickAssetKind =
+  | 'chair'
+  | 'desk'
+  | 'sofa'
+  | 'bed'
+  | 'fridge'
+  | 'washer'
+  | 'sink'
+  | 'toilet';
+
 const mmToM = 0.001;
 
 (THREE.BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
@@ -201,6 +221,8 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [showSectionPlane, setShowSectionPlane] = useState(false);
   const [sectionHeight, setSectionHeight] = useState(1.2); // meters
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
+  const [viewPresets, setViewPresets] = useState<ViewPreset[]>([]);
+  const [newPresetName, setNewPresetName] = useState('');
   const [visibleCategories, setVisibleCategories] = useState({
     walls: true, slabs: true, roofs: true, columns: true, beams: true,
     stairs: true, doors: true, windows: true, furniture: true, mep: true,
@@ -709,6 +731,93 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     }
     updateCamera();
   }, [updateCamera]);
+
+  const saveCurrentViewPreset = useCallback(() => {
+    if (!cameraRef.current) return;
+    const name = newPresetName.trim() || `Scene ${viewPresets.length + 1}`;
+    const cam = cameraRef.current.position;
+    const t = orbitTarget.current;
+    const preset: ViewPreset = {
+      id: `view_${Date.now().toString(36)}`,
+      name,
+      cameraPosition: [cam.x, cam.y, cam.z],
+      target: [t.x, t.y, t.z],
+      renderMode,
+      renderQuality,
+      sunPosition,
+    };
+    setViewPresets(prev => [...prev.slice(-7), preset]);
+    setNewPresetName('');
+    onStatusChange(`Saved view preset: ${name}`);
+  }, [newPresetName, onStatusChange, renderMode, renderQuality, sunPosition, viewPresets.length]);
+
+  const applyViewPreset = useCallback((preset: ViewPreset) => {
+    if (!cameraRef.current) return;
+    const [cx, cy, cz] = preset.cameraPosition;
+    const [tx, ty, tz] = preset.target;
+    const dx = cx - tx;
+    const dy = cy - ty;
+    const dz = cz - tz;
+    const radius = Math.max(0.001, Math.sqrt(dx * dx + dy * dy + dz * dz));
+    const theta = Math.atan2(dx, dz);
+    const phi = Math.asin(Math.max(-1, Math.min(1, dy / radius)));
+
+    orbitTarget.current.set(tx, ty, tz);
+    orbitAngles.current = { theta, phi, radius };
+    cameraRef.current.position.set(cx, cy, cz);
+    cameraRef.current.lookAt(tx, ty, tz);
+    setRenderMode(preset.renderMode);
+    setRenderQuality(preset.renderQuality);
+    setSunPosition(preset.sunPosition);
+    onStatusChange(`Applied view preset: ${preset.name}`);
+  }, [onStatusChange]);
+
+  const deleteViewPreset = useCallback((id: string) => {
+    setViewPresets(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  const insertQuickAsset = useCallback((kind: QuickAssetKind) => {
+    const anchor = orbitTarget.current;
+    const baseX = Math.round(anchor.x * 1000);
+    const baseY = Math.round(anchor.z * 1000);
+    const offset = (Math.random() - 0.5) * 1200;
+    const id = `${kind}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    let entity: AnyEntity | null = null;
+
+    switch (kind) {
+      case 'chair':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 500, depth: 500, rotation: 0, category: 'chair', name: 'Chair' } as FurnitureEntity;
+        break;
+      case 'desk':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 1600, depth: 700, rotation: 0, category: 'desk', name: 'Desk' } as FurnitureEntity;
+        break;
+      case 'sofa':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 2000, depth: 900, rotation: 0, category: 'sofa', name: 'Sofa' } as FurnitureEntity;
+        break;
+      case 'bed':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 2000, depth: 1600, rotation: 0, category: 'bed', name: 'Bed' } as FurnitureEntity;
+        break;
+      case 'fridge':
+        entity = { id, type: 'appliance', layer: 'A-Appliance', x: baseX + offset, y: baseY + offset, width: 900, depth: 800, rotation: 0, category: 'fridge', name: 'Fridge' } as ApplianceEntity;
+        break;
+      case 'washer':
+        entity = { id, type: 'appliance', layer: 'A-Appliance', x: baseX + offset, y: baseY + offset, width: 700, depth: 700, rotation: 0, category: 'washer', name: 'Washer' } as ApplianceEntity;
+        break;
+      case 'sink':
+        entity = { id, type: 'fixture', layer: 'A-Fixture', x: baseX + offset, y: baseY + offset, width: 800, depth: 500, rotation: 0, category: 'sink', name: 'Sink' } as FixtureEntity;
+        break;
+      case 'toilet':
+        entity = { id, type: 'fixture', layer: 'A-Fixture', x: baseX + offset, y: baseY + offset, width: 400, depth: 700, rotation: 0, category: 'toilet', name: 'Toilet' } as FixtureEntity;
+        break;
+    }
+
+    if (!entity) return;
+    pushUndo3D(`Insert ${kind}`);
+    floor.entities.push(entity);
+    if (onEntityUpdate) onEntityUpdate([...floor.entities]);
+    buildFromEntities();
+    onStatusChange(`Inserted library asset: ${kind}`);
+  }, [floor.entities, onEntityUpdate, onStatusChange, pushUndo3D]);
 
   const fitSunShadowToModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -3150,6 +3259,22 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
         <div className="sidebar-divider"/>
 
         <div className="tool-group">
+          <div className="tool-group-label" style={{textAlign:'left',paddingLeft:12}}>Quick Asset Library</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, padding: '2px 10px' }}>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('chair')}>Chair</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('desk')}>Desk</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('sofa')}>Sofa</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('bed')}>Bed</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('fridge')}>Fridge</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('washer')}>Washer</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('sink')}>Sink</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('toilet')}>Toilet</button>
+          </div>
+        </div>
+
+        <div className="sidebar-divider"/>
+
+        <div className="tool-group">
           <div className="tool-group-label" style={{textAlign:'left',paddingLeft:12}}>BIM Create</div>
           {([['wall','Wall'],['slab','Slab'],['column','Column'],['beam','Beam'],
              ['roof','Roof'],['stair','Stair'],['ramp','Ramp'],
@@ -3324,6 +3449,24 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
             <input type="checkbox" checked={useNativeMesher} onChange={e => setUseNativeMesher(e.target.checked)} style={{ marginRight: 4 }} />
             <span>Use Native Rust Mesher</span>
           </label>
+          <div style={{ padding: '4px 12px' }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>Saved Views</div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+              <input
+                value={newPresetName}
+                onChange={e => setNewPresetName(e.target.value)}
+                placeholder="Preset name"
+                style={{ flex: 1, fontSize: 10 }}
+              />
+              <button className="btn ghost" style={{ fontSize: 10, padding: '4px 6px' }} onClick={saveCurrentViewPreset}>Save</button>
+            </div>
+            {viewPresets.slice(-4).map(p => (
+              <div key={p.id} style={{ display: 'flex', gap: 4, marginBottom: 3 }}>
+                <button className="btn ghost" style={{ fontSize: 10, flex: 1, textAlign: 'left' }} onClick={() => applyViewPreset(p)}>{p.name}</button>
+                <button className="btn ghost" style={{ fontSize: 10, color: '#ff6b6b', padding: '4px 6px' }} onClick={() => deleteViewPreset(p.id)}>x</button>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
