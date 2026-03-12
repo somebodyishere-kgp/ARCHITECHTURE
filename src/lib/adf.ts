@@ -713,6 +713,62 @@ export interface HistoryEntry {
   entities: AnyEntity[];
 }
 
+export interface PresetView {
+  id: string;
+  name: string;
+  cameraPosition: [number, number, number];
+  target: [number, number, number];
+  renderMode: 'solid' | 'wireframe' | 'clay' | 'realistic' | 'xray';
+  renderQuality: 'auto' | 'ultra' | 'balanced' | 'performance';
+  sunPosition: { azimuth: number; altitude: number };
+}
+
+export interface PresetSection {
+  id: string;
+  name: string;
+  height: number;
+}
+
+export interface PresetSectionSet {
+  id: string;
+  name: string;
+  heights: number[];
+}
+
+export interface PresetElevation {
+  id: string;
+  name: string;
+  direction: 'front' | 'back' | 'left' | 'right';
+}
+
+export interface PresetWorld {
+  id: string;
+  name: string;
+  renderMode: 'solid' | 'wireframe' | 'clay' | 'realistic' | 'xray';
+  renderQuality: 'auto' | 'ultra' | 'balanced' | 'performance';
+  sunPosition: { azimuth: number; altitude: number };
+  useGeoSun: boolean;
+  geoSunParams: { latitude: number; longitude: number; dayOfYear: number; hour: number };
+  toggles: {
+    showGrid: boolean;
+    showAxes: boolean;
+    showShadows: boolean;
+    enableSSAO: boolean;
+    enableSSR: boolean;
+    enableTAA: boolean;
+    enableCSM: boolean;
+    enableSky: boolean;
+  };
+}
+
+export interface ProjectPresetLibrary {
+  views: PresetView[];
+  sections: PresetSection[];
+  sectionSets: PresetSectionSet[];
+  elevations: PresetElevation[];
+  worlds: PresetWorld[];
+}
+
 // ─── Top-level project ───────────────────────────────────────────────────────
 export interface ADFProject {
   version: string;
@@ -726,6 +782,7 @@ export interface ADFProject {
   sheets: Sheet[];
   layers: Layer[];
   blocks: BlockDef[];
+  presetLibrary?: ProjectPresetLibrary;
   buildingCodes?: Record<string, unknown>;
   generatedFromPrompt?: string;
 }
@@ -751,6 +808,7 @@ export function createProject(name = 'New Project'): ADFProject {
     sheets: [],
     layers: defaultLayers(),
     blocks: [],
+    presetLibrary: { views: [], sections: [], sectionSets: [], elevations: [], worlds: [] },
   };
 }
 

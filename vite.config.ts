@@ -14,6 +14,22 @@ export default defineConfig(async () => ({
   clearScreen: false,
   build: {
     chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/three') || id.includes('node_modules/three-mesh-bvh')) {
+            return 'vendor-three';
+          }
+          if (id.includes('node_modules/pdf-lib')) {
+            return 'vendor-pdf';
+          }
+          if (id.includes('node_modules')) {
+            return 'vendor-misc';
+          }
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     port: 1420,

@@ -19,7 +19,7 @@ import {
   Navigation, AlertTriangle, Split, Edit3, ZoomIn, ZoomOut, Home, Lightbulb
 } from 'lucide-react';
 import {
-  FloorPlan, ADFProject, AnyEntity, Vec2,
+  FloorPlan, ADFProject, AnyEntity, Vec2, ProjectPresetLibrary,
   WallEntity, DoorEntity, WindowEntity, ColumnEntity, BeamEntity,
   SlabEntity, RoofEntity, StairEntity, RampEntity, CurtainWallEntity,
   RailingEntity, CeilingEntity, RoomEntity, ZoneEntity,
@@ -72,6 +72,7 @@ interface Props {
   project: ADFProject;
   onStatusChange: (s: string) => void;
   onEntityUpdate?: (entities: AnyEntity[]) => void;
+  onPresetLibraryChange?: (library: ProjectPresetLibrary) => void;
 }
 
 interface SceneObject {
@@ -207,7 +208,7 @@ const mmToM = 0.001;
 (THREE.BufferGeometry.prototype as any).disposeBoundsTree = disposeBoundsTree;
 (THREE.Mesh.prototype as any).raycast = acceleratedRaycast;
 
-export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpdate }: Props) {
+export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpdate, onPresetLibraryChange }: Props) {
   const mountRef   = useRef<HTMLDivElement>(null);
   const sceneRef   = useRef<THREE.Scene | null>(null);
   const cameraRef  = useRef<THREE.PerspectiveCamera | null>(null);
@@ -235,6 +236,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const axesRef = useRef<THREE.AxesHelper | null>(null);
   const nativeGenerationRef = useRef(0);
+  const presetHydratedProjectRef = useRef<string | null>(null);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasModel, setHasModel]         = useState(false);
@@ -269,6 +271,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [elevationPresets, setElevationPresets] = useState<ElevationPreset[]>([]);
   const [newElevationPresetName, setNewElevationPresetName] = useState('');
   const [newElevationDirection, setNewElevationDirection] = useState<'front' | 'back' | 'left' | 'right'>('front');
+  const [pendingElevationDirection, setPendingElevationDirection] = useState<'front' | 'back' | 'left' | 'right' | null>(null);
   const [sectionResults, setSectionResults] = useState<SectionResult[]>([]);
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>([]);
   const [newPresetName, setNewPresetName] = useState('');
@@ -284,6 +287,31 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
   const [sunPosition, setSunPosition] = useState({ azimuth: 45, altitude: 60 });
   const [useGeoSun, setUseGeoSun] = useState(false);
   const [geoSunParams, setGeoSunParams] = useState({ latitude: 28.6139, longitude: 77.2090, dayOfYear: 172, hour: 13 });
+
+  useEffect(() => {
+    const projectKey = `${project.createdAt}|${project.projectName}`;
+    if (presetHydratedProjectRef.current === projectKey) return;
+    presetHydratedProjectRef.current = projectKey;
+
+    const library = project.presetLibrary;
+    if (!library) return;
+    setViewPresets(Array.isArray(library.views) ? (library.views as ViewPreset[]) : []);
+    setSectionPresets(Array.isArray(library.sections) ? (library.sections as SectionPreset[]) : []);
+    setSectionSetPresets(Array.isArray(library.sectionSets) ? (library.sectionSets as SectionSetPreset[]) : []);
+    setElevationPresets(Array.isArray(library.elevations) ? (library.elevations as ElevationPreset[]) : []);
+    setWorldPresets(Array.isArray(library.worlds) ? (library.worlds as WorldPreset[]) : []);
+  }, [project.createdAt, project.projectName, project.presetLibrary]);
+
+  useEffect(() => {
+    if (!onPresetLibraryChange) return;
+    onPresetLibraryChange({
+      views: viewPresets,
+      sections: sectionPresets,
+      sectionSets: sectionSetPresets,
+      elevations: elevationPresets,
+      worlds: worldPresets,
+    });
+  }, [viewPresets, sectionPresets, sectionSetPresets, elevationPresets, worldPresets, onPresetLibraryChange]);
 
   // ─── New state for advanced features ──────────────────────────
   const [walkthroughMode, setWalkthroughMode] = useState(false);
@@ -931,7 +959,8 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
 
   const applyElevationPreset = useCallback((preset: ElevationPreset) => {
     setView(preset.direction);
-    onStatusChange(`Applied elevation preset: ${preset.name}`);
+    setPendingElevationDirection(preset.direction);
+    onStatusChange(`Applied elevation preset: ${preset.name} (generating...)`);
   }, [onStatusChange, setView]);
 
   const removeElevationPreset = useCallback((id: string) => {
@@ -3421,6 +3450,12 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     }]);
     onStatusChange(`Generated ${direction} elevation with ${elevEntities.length} entities`);
   }, [floor, onStatusChange]);
+
+  useEffect(() => {
+    if (!pendingElevationDirection) return;
+    generateElevation(pendingElevationDirection);
+    setPendingElevationDirection(null);
+  }, [pendingElevationDirection, generateElevation]);
 
   // ─── Quantity Takeoff ──────────────────────────────────────────
   const calculateQTO = useCallback(() => {

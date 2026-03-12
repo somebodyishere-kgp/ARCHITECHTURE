@@ -1,14 +1,15 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
-import { ADFProject, createProject } from './lib/adf';
-import PlansTab from './tabs/PlansTab';
-import ThreeDTab from './tabs/ThreeDTab';
-import DocsTab from './tabs/DocsTab';
-import KeybindingsTab from './tabs/KeybindingsTab';
+import { ADFProject, ProjectPresetLibrary, createProject } from './lib/adf';
 import AIChat from './components/AIChat';
 import './App.css';
+
+const PlansTab = lazy(() => import('./tabs/PlansTab'));
+const ThreeDTab = lazy(() => import('./tabs/ThreeDTab'));
+const DocsTab = lazy(() => import('./tabs/DocsTab'));
+const KeybindingsTab = lazy(() => import('./tabs/KeybindingsTab'));
 
 type TabId = 'plans' | '3d' | 'docs' | 'keys';
 
@@ -303,35 +304,40 @@ export default function App() {
       <div className="main-content">
         {/* Tab Views */}
         <div className="tab-content">
-          {activeTab === 'plans' && (
-            <PlansTab
-              floor={activeFloor}
-              layers={project.layers}
-              onFloorChange={(updated) => {
-                updateProject(p => {
-                  const floors = [...p.floors];
-                  floors[activeFloorIndex] = updated;
-                  return { ...p, floors };
-                });
-              }}
-              onLayersChange={(layers) => updateProject(p => ({ ...p, layers }))}
-              onStatusChange={setStatusMsg}
-            />
-          )}
-          {activeTab === '3d' && (
-            <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
-              onEntityUpdate={(entities) => {
-                updateProject(p => {
-                  const floors = [...p.floors];
-                  floors[activeFloorIndex] = { ...floors[activeFloorIndex], entities };
-                  return { ...p, floors };
-                });
-              }} />
-          )}
-          {activeTab === 'docs' && (
-            <DocsTab project={project} onProjectChange={setProject} onStatusChange={setStatusMsg} />
-          )}
-          {activeTab === 'keys' && <KeybindingsTab />}
+          <Suspense fallback={<div style={{ padding: 16, color: 'var(--text-muted)' }}>Loading module...</div>}>
+            {activeTab === 'plans' && (
+              <PlansTab
+                floor={activeFloor}
+                layers={project.layers}
+                onFloorChange={(updated) => {
+                  updateProject(p => {
+                    const floors = [...p.floors];
+                    floors[activeFloorIndex] = updated;
+                    return { ...p, floors };
+                  });
+                }}
+                onLayersChange={(layers) => updateProject(p => ({ ...p, layers }))}
+                onStatusChange={setStatusMsg}
+              />
+            )}
+            {activeTab === '3d' && (
+              <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
+                onEntityUpdate={(entities) => {
+                  updateProject(p => {
+                    const floors = [...p.floors];
+                    floors[activeFloorIndex] = { ...floors[activeFloorIndex], entities };
+                    return { ...p, floors };
+                  });
+                }}
+                onPresetLibraryChange={(library: ProjectPresetLibrary) => {
+                  updateProject(p => ({ ...p, presetLibrary: library }));
+                }} />
+            )}
+            {activeTab === 'docs' && (
+              <DocsTab project={project} onProjectChange={setProject} onStatusChange={setStatusMsg} />
+            )}
+            {activeTab === 'keys' && <KeybindingsTab />}
+          </Suspense>
         </div>
 
         {/* AI Chat Panel */}
