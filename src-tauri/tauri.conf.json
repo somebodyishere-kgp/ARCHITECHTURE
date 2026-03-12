@@ -34,12 +34,5 @@
       "icons/icon.png"
     ]
   },
-  "plugins": {
-    "shell": {
-      "all": true
-    },
-    "fs": {
-      "all": true
-    }
-  }
+  "plugins": {}
 }
