@@ -44,6 +44,12 @@ export interface BranchMergePreview {
   conflicts: BranchMergeConflict[];
 }
 
+export interface BranchMergeConflictResolution {
+  floorId: string;
+  entityId: string;
+  action: 'prefer_source' | 'prefer_target';
+}
+
 function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -264,6 +270,85 @@ export function applyBranchMerge(
 
       if (!entityConflict(existing, sourceEntity)) return;
       if (strategy === 'prefer_source') {
+        mergedEntityMap.set(sourceEntity.id, deepClone(sourceEntity));
+      }
+    });
+
+    mergedFloors.set(floorId, {
+      ...currentFloor,
+      entities: Array.from(mergedEntityMap.values()),
+    });
+  });
+
+  const graph = ensureGraph(project);
+  const nodes = graph.nodes.map(node => {
+    if (node.id !== targetBranchId) return node;
+    return {
+      ...node,
+      snapshot: {
+        ...target,
+        capturedAt: new Date().toISOString(),
+        floors: Array.from(mergedFloors.values()),
+      },
+    };
+  });
+
+  const targetIsActive = graph.activeBranchId === targetBranchId;
+  return {
+    project: {
+      ...project,
+      ...(targetIsActive ? { floors: Array.from(mergedFloors.values()) } : {}),
+      branchGraph: {
+        ...graph,
+        nodes,
+      },
+    },
+    preview,
+  };
+}
+
+export function applyBranchMergeResolutions(
+  project: ADFProject,
+  sourceBranchId: string,
+  targetBranchId: string,
+  resolutions: BranchMergeConflictResolution[]
+): { project: ADFProject; preview: BranchMergePreview } {
+  const preview = previewBranchMerge(project, sourceBranchId, targetBranchId);
+  const source = resolveSnapshot(project, sourceBranchId);
+  const target = resolveSnapshot(project, targetBranchId);
+
+  if (!source || !target) {
+    throw new Error('Cannot resolve merge because source or target snapshot is missing.');
+  }
+
+  const resolutionMap = new Map<string, BranchMergeConflictResolution['action']>();
+  resolutions.forEach(resolution => {
+    resolutionMap.set(`${resolution.floorId}::${resolution.entityId}`, resolution.action);
+  });
+
+  const sourceFloors = getFloorMap(source);
+  const mergedFloors = getFloorMap(target);
+
+  sourceFloors.forEach((sourceFloor, floorId) => {
+    const currentFloor = mergedFloors.get(floorId);
+    if (!currentFloor) {
+      mergedFloors.set(floorId, deepClone(sourceFloor));
+      return;
+    }
+
+    const mergedEntityMap = new Map(currentFloor.entities.map(entity => [entity.id, deepClone(entity)]));
+    sourceFloor.entities.forEach(sourceEntity => {
+      const existing = mergedEntityMap.get(sourceEntity.id);
+      if (!existing) {
+        mergedEntityMap.set(sourceEntity.id, deepClone(sourceEntity));
+        return;
+      }
+
+      if (!entityConflict(existing, sourceEntity)) return;
+
+      const key = `${floorId}::${sourceEntity.id}`;
+      const action = resolutionMap.get(key);
+      if (action === 'prefer_source') {
         mergedEntityMap.set(sourceEntity.id, deepClone(sourceEntity));
       }
     });

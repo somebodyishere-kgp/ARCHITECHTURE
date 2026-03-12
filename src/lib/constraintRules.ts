@@ -13,6 +13,12 @@ import {
   WindowEntity,
 } from './adf';
 
+export interface ConstraintAutoAdjustResult {
+  floor: FloorPlan;
+  adjustedCount: number;
+  adjustments: string[];
+}
+
 function findRule(rules: ConstraintRuleDefinition[] | undefined, kind: ConstraintRuleKind) {
   return (rules || []).find(rule => rule.kind === kind && rule.enabled);
 }
@@ -181,5 +187,60 @@ export function evaluateConstraintRuleGraph(
     nodes,
     edges: enrichedEdges,
     warnings,
+  };
+}
+
+export function applyConstraintAutoAdjustments(
+  floor: FloorPlan,
+  rules?: ConstraintRuleDefinition[]
+): ConstraintAutoAdjustResult {
+  const doorWidthRule = findRule(rules, 'door_width_min');
+  const windowSillRule = findRule(rules, 'window_sill_min');
+  const invalidValueRule = findRule(rules, 'invalid_value');
+
+  const minDoorWidth = typeof doorWidthRule?.threshold === 'number' ? doorWidthRule.threshold : 700;
+  const minSillHeight = typeof windowSillRule?.threshold === 'number' ? windowSillRule.threshold : 450;
+
+  let adjustedCount = 0;
+  const adjustments: string[] = [];
+
+  const entities = floor.entities.map(entity => {
+    if (entity.type === 'door') {
+      const door = entity as DoorEntity;
+      if (doorWidthRule && door.width < minDoorWidth) {
+        adjustedCount += 1;
+        adjustments.push(`Door ${door.id} width adjusted ${door.width} -> ${minDoorWidth}`);
+        return { ...door, width: minDoorWidth };
+      }
+    }
+
+    if (entity.type === 'window') {
+      const windowEntity = entity as WindowEntity;
+      if (windowSillRule && windowEntity.sillHeight < minSillHeight) {
+        adjustedCount += 1;
+        adjustments.push(`Window ${windowEntity.id} sill adjusted ${windowEntity.sillHeight} -> ${minSillHeight}`);
+        return { ...windowEntity, sillHeight: minSillHeight };
+      }
+    }
+
+    if (entity.type === 'dimension') {
+      const dimension = entity as DimensionEntity;
+      if (invalidValueRule && typeof dimension.drivenValue === 'number' && dimension.drivenValue <= 0) {
+        adjustedCount += 1;
+        adjustments.push(`Dimension ${dimension.id} driven value adjusted ${dimension.drivenValue} -> 1`);
+        return { ...dimension, drivenValue: 1 };
+      }
+    }
+
+    return entity;
+  });
+
+  return {
+    floor: {
+      ...floor,
+      entities,
+    },
+    adjustedCount,
+    adjustments,
   };
 }

@@ -6679,6 +6679,33 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
     constraintSeverityFilter === 'all' || edge.severity === constraintSeverityFilter
   ));
 
+  const focusEntityFromGraph = useCallback((entityId: string) => {
+    const entity = floor.entities.find(e => e.id === entityId);
+    if (!entity) {
+      cmdLog(`Graph focus: entity not found (${entityId})`);
+      return;
+    }
+
+    setSelectedIds([entityId]);
+    setActiveTool('select');
+
+    const verts = entityVertices(entity);
+    if (verts.length > 0 && canvasRef.current) {
+      const cx = verts.reduce((acc, v) => acc + v.x, 0) / verts.length;
+      const cy = verts.reduce((acc, v) => acc + v.y, 0) / verts.length;
+      const canvasCenterX = (canvasRef.current.width || 0) / 2;
+      const canvasCenterY = (canvasRef.current.height || 0) / 2;
+
+      setTransform(prev => ({
+        ...prev,
+        x: canvasCenterX - cx / MM_PER_PX * prev.scale,
+        y: canvasCenterY - cy / MM_PER_PX * prev.scale,
+      }));
+    }
+
+    cmdLog(`Graph focus: ${entityId}`);
+  }, [cmdLog, floor.entities]);
+
   const selectTool = useCallback((toolId: Tool) => {
     setActiveTool(toolId);
     setDrawPts([]);
@@ -7446,20 +7473,24 @@ export default function PlansTab({ floor, layers, onFloorChange, onLayersChange,
                 <div style={{ marginBottom: 4 }}>Nodes ({filteredConstraintNodes.length})</div>
                 <div style={{ maxHeight: 70, overflowY: 'auto', display: 'grid', gap: 2, marginBottom: 6 }}>
                   {filteredConstraintNodes.slice(0, 12).map(node => (
-                    <div key={node.id} style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px' }}>
+                    <button key={node.id}
+                      onClick={() => focusEntityFromGraph(node.id)}
+                      style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px', border: '1px solid var(--border)', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}>
                       <span style={{ color: 'var(--text-primary)' }}>{node.id}</span>
                       <span style={{ color: 'var(--text-muted)' }}> ({node.type}) [{node.severity}]</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
 
                 <div style={{ marginBottom: 4 }}>Edges ({filteredConstraintEdges.length})</div>
                 <div style={{ maxHeight: 70, overflowY: 'auto', display: 'grid', gap: 2 }}>
                   {filteredConstraintEdges.slice(0, 12).map((edge, i) => (
-                    <div key={`${edge.from}-${edge.to}-${i}`} style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px' }}>
+                    <button key={`${edge.from}-${edge.to}-${i}`}
+                      onClick={() => focusEntityFromGraph(edge.to)}
+                      style={{ background: 'var(--bg-elevated)', borderRadius: 3, padding: '2px 4px', border: '1px solid var(--border)', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}>
                       <span style={{ color: 'var(--text-primary)' }}>{edge.from}</span>
                       <span style={{ color: 'var(--text-muted)' }}> -&gt; {edge.to} ({edge.kind}, {edge.severity})</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </>

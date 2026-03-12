@@ -214,6 +214,7 @@
 .timeline-editor-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .merge-preview-box {
@@ -223,6 +224,35 @@
   padding: 6px 8px;
   font-size: 11px;
   color: var(--text-primary);
+}
+
+.merge-conflict-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.merge-conflict-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.merge-conflict-row select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 2px 4px;
 }
 
 .timeline-event-list {

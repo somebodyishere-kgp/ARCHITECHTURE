@@ -5,8 +5,8 @@ import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-rea
 import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { propagateFloorDependencies } from './lib/systemGraph';
-import { applyBranchMerge, BranchMergePreview, captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, previewBranchMerge, switchToBranch } from './lib/branchGraph';
-import { evaluateConstraintRuleGraph } from './lib/constraintRules';
+import { applyBranchMerge, applyBranchMergeResolutions, BranchMergePreview, captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, previewBranchMerge, switchToBranch } from './lib/branchGraph';
+import { applyConstraintAutoAdjustments, evaluateConstraintRuleGraph } from './lib/constraintRules';
 import AIChat from './components/AIChat';
 import './App.css';
 
@@ -42,7 +42,9 @@ export default function App() {
   const [compareBaseBranchId, setCompareBaseBranchId] = useState('');
   const [mergeSourceBranchId, setMergeSourceBranchId] = useState('');
   const [mergePreview, setMergePreview] = useState<BranchMergePreview | null>(null);
+  const [mergeConflictResolutions, setMergeConflictResolutions] = useState<Record<string, 'prefer_source' | 'prefer_target'>>({});
   const [showTimelineEditor, setShowTimelineEditor] = useState(false);
+  const trackImportRef = useRef<HTMLInputElement>(null);
   const lastPlaybackEventRef = useRef<string | null>(null);
 
   const activeFloor = project.floors[activeFloorIndex];
@@ -327,6 +329,11 @@ export default function App() {
     try {
       const preview = previewBranchMerge(project, mergeSourceBranchId, targetBranchId);
       setMergePreview(preview);
+      const defaults: Record<string, 'prefer_source' | 'prefer_target'> = {};
+      preview.conflicts.forEach(conflict => {
+        defaults[`${conflict.floorId}::${conflict.entityId}`] = 'prefer_target';
+      });
+      setMergeConflictResolutions(defaults);
       setStatusMsg(`Merge preview: +${preview.addedCount}, ~${preview.updatedCount}, conflicts ${preview.conflictCount}`);
     } catch (err) {
       setStatusMsg(`Merge preview failed: ${err}`);
@@ -358,6 +365,35 @@ export default function App() {
       setStatusMsg(`Merge apply failed: ${err}`);
     }
   }, [mergeSourceBranchId, project, updateProject]);
+
+  const handleApplyMergePerEntity = useCallback(() => {
+    const graph = ensureGraph(project);
+    const targetBranchId = graph.activeBranchId;
+    if (!mergeSourceBranchId) {
+      setStatusMsg('Select a source branch for merge apply');
+      return;
+    }
+    if (!mergePreview) {
+      setStatusMsg('Run merge preview first');
+      return;
+    }
+
+    try {
+      const resolutions = mergePreview.conflicts.map(conflict => {
+        const key = `${conflict.floorId}::${conflict.entityId}`;
+        return {
+          floorId: conflict.floorId,
+          entityId: conflict.entityId,
+          action: mergeConflictResolutions[key] || 'prefer_target',
+        };
+      });
+
+      updateProject(prev => applyBranchMergeResolutions(prev, mergeSourceBranchId, targetBranchId, resolutions).project);
+      setStatusMsg(`Per-entity merge applied with ${resolutions.length} conflict decisions`);
+    } catch (err) {
+      setStatusMsg(`Per-entity merge failed: ${err}`);
+    }
+  }, [mergeConflictResolutions, mergePreview, mergeSourceBranchId, project, updateProject]);
 
   const handleAddTimelineTrack = useCallback(() => {
     const rawName = prompt('Timeline track name', `Track ${Math.max(1, (project.timeline?.tracks.length || 0) + 1)}`);
@@ -499,6 +535,148 @@ export default function App() {
     }));
     setIsTimelinePlaying(false);
     setStatusMsg(`Jumped to T${time.toFixed(1)} d`);
+  }, [updateProject]);
+
+  const handleDuplicateTimelineRange = useCallback(() => {
+    if (!selectedTrackId) {
+      setStatusMsg('Select a track first');
+      return;
+    }
+    const startRaw = prompt('Duplicate range start time (days)', '0');
+    const endRaw = prompt('Duplicate range end time (days)', '30');
+    const offsetRaw = prompt('Duplicate offset (days)', '30');
+    if (!startRaw || !endRaw || !offsetRaw) return;
+    const start = Number(startRaw);
+    const end = Number(endRaw);
+    const offset = Number(offsetRaw);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(offset) || end < start) {
+      setStatusMsg('Invalid duplicate range');
+      return;
+    }
+
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: timeline.tracks.map(track => {
+            if (track.id !== selectedTrackId) return track;
+            const clones = track.events
+              .filter(event => event.time >= start && event.time <= end)
+              .map(event => ({ ...event, id: uid(), time: event.time + offset }));
+            return { ...track, events: [...track.events, ...clones].sort((a, b) => a.time - b.time) };
+          }),
+        },
+      };
+    });
+    setStatusMsg('Timeline range duplicated');
+  }, [selectedTrackId, updateProject]);
+
+  const handleShiftTimelineRange = useCallback(() => {
+    if (!selectedTrackId) {
+      setStatusMsg('Select a track first');
+      return;
+    }
+    const startRaw = prompt('Shift range start time (days)', '0');
+    const endRaw = prompt('Shift range end time (days)', '30');
+    const deltaRaw = prompt('Shift delta (days, can be negative)', '7');
+    if (!startRaw || !endRaw || !deltaRaw) return;
+    const start = Number(startRaw);
+    const end = Number(endRaw);
+    const delta = Number(deltaRaw);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(delta) || end < start) {
+      setStatusMsg('Invalid shift range');
+      return;
+    }
+
+    updateProject(prev => {
+      const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+      return {
+        ...prev,
+        timeline: {
+          ...timeline,
+          tracks: timeline.tracks.map(track => {
+            if (track.id !== selectedTrackId) return track;
+            return {
+              ...track,
+              events: track.events
+                .map(event => (
+                  event.time >= start && event.time <= end
+                    ? { ...event, time: Math.max(0, event.time + delta) }
+                    : event
+                ))
+                .sort((a, b) => a.time - b.time),
+            };
+          }),
+        },
+      };
+    });
+    setStatusMsg('Timeline range shifted');
+  }, [selectedTrackId, updateProject]);
+
+  const handleExportTimelineTrack = useCallback(() => {
+    const track = (project.timeline?.tracks || []).find(t => t.id === selectedTrackId);
+    if (!track) {
+      setStatusMsg('Select a track first');
+      return;
+    }
+    const payload = {
+      format: 'archflow.timeline.track.v1',
+      exportedAt: new Date().toISOString(),
+      track,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${track.name.replace(/\s+/g, '_').toLowerCase()}_track.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setStatusMsg(`Exported track: ${track.name}`);
+  }, [project.timeline?.tracks, selectedTrackId]);
+
+  const handleImportTimelineTrackClick = useCallback(() => {
+    trackImportRef.current?.click();
+  }, []);
+
+  const handleImportTimelineTrackFile = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const payload = JSON.parse(String(reader.result)) as { track?: TimelineTrack; format?: string };
+        if (!payload.track) {
+          setStatusMsg('Invalid timeline track file');
+          return;
+        }
+
+        const imported: TimelineTrack = {
+          ...payload.track,
+          id: uid(),
+          name: `${payload.track.name} (Imported)`,
+          events: (payload.track.events || []).map(ev => ({ ...ev, id: uid() })),
+        };
+
+        updateProject(prev => {
+          const timeline = prev.timeline || { activeTime: 0, tracks: [] };
+          return {
+            ...prev,
+            timeline: {
+              ...timeline,
+              tracks: [...timeline.tracks, imported],
+            },
+          };
+        });
+        setSelectedTrackId(imported.id);
+        setStatusMsg(`Imported track: ${imported.name}`);
+      } catch {
+        setStatusMsg('Failed to parse timeline track file');
+      }
+    };
+    reader.readAsText(file);
   }, [updateProject]);
 
   const selectedTrack = (project.timeline?.tracks || []).find(track => track.id === selectedTrackId) || null;
@@ -743,8 +921,10 @@ export default function App() {
                 onFloorChange={(updated) => {
                   const prevFloor = project.floors[activeFloorIndex];
                   const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, updated);
-                  const constraintReport = evaluateConstraintRuleGraph(propagatedFloor, project.constraintRules);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0) {
+                  const autoAdjust = applyConstraintAutoAdjustments(propagatedFloor, project.constraintRules);
+                  const livingFloor = autoAdjust.floor;
+                  const constraintReport = evaluateConstraintRuleGraph(livingFloor, project.constraintRules);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoAdjust.adjustedCount > 0) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
@@ -752,7 +932,10 @@ export default function App() {
                     const constraintWarn = constraintReport.warningCount > 0
                       ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
                       : '';
-                    setStatusMsg(`${base}${warn}${constraintWarn}`);
+                    const auto = autoAdjust.adjustedCount > 0
+                      ? ` + ${autoAdjust.adjustedCount} auto-adjustment${autoAdjust.adjustedCount === 1 ? '' : 's'}`
+                      : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -774,7 +957,7 @@ export default function App() {
                       constraintReport,
                     ].slice(-20);
                     floors[activeFloorIndex] = {
-                      ...propagatedFloor,
+                      ...livingFloor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
@@ -797,8 +980,10 @@ export default function App() {
                   const prevFloor = project.floors[activeFloorIndex];
                   const nextFloor = { ...prevFloor, entities };
                   const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, nextFloor);
-                  const constraintReport = evaluateConstraintRuleGraph(propagatedFloor, project.constraintRules);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0) {
+                  const autoAdjust = applyConstraintAutoAdjustments(propagatedFloor, project.constraintRules);
+                  const livingFloor = autoAdjust.floor;
+                  const constraintReport = evaluateConstraintRuleGraph(livingFloor, project.constraintRules);
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoAdjust.adjustedCount > 0) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
@@ -806,7 +991,10 @@ export default function App() {
                     const constraintWarn = constraintReport.warningCount > 0
                       ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
                       : '';
-                    setStatusMsg(`${base}${warn}${constraintWarn}`);
+                    const auto = autoAdjust.adjustedCount > 0
+                      ? ` + ${autoAdjust.adjustedCount} auto-adjustment${autoAdjust.adjustedCount === 1 ? '' : 's'}`
+                      : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -828,7 +1016,7 @@ export default function App() {
                       constraintReport,
                     ].slice(-20);
                     floors[activeFloorIndex] = {
-                      ...propagatedFloor,
+                      ...livingFloor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
@@ -867,12 +1055,46 @@ export default function App() {
               <div className="timeline-editor-actions">
                 <button className="btn ghost" onClick={handleAddTimelineTrack}>Add Track</button>
                 <button className="btn ghost" onClick={handleAddTimelineEvent}>Add Event</button>
+                <button className="btn ghost" onClick={handleDuplicateTimelineRange}>Duplicate Range</button>
+                <button className="btn ghost" onClick={handleShiftTimelineRange}>Shift Range</button>
+                <button className="btn ghost" onClick={handleExportTimelineTrack}>Export Track</button>
+                <button className="btn ghost" onClick={handleImportTimelineTrackClick}>Import Track</button>
               </div>
+              <input
+                ref={trackImportRef}
+                type="file"
+                accept="application/json"
+                style={{ display: 'none' }}
+                onChange={handleImportTimelineTrackFile}
+              />
             </div>
 
             {mergePreview && (
               <div className="merge-preview-box">
                 Merge Preview: +{mergePreview.addedCount}, ~{mergePreview.updatedCount}, conflicts {mergePreview.conflictCount}
+                {mergePreview.conflicts.length > 0 && (
+                  <div className="merge-conflict-list">
+                    {mergePreview.conflicts.slice(0, 20).map(conflict => {
+                      const key = `${conflict.floorId}::${conflict.entityId}`;
+                      return (
+                        <div key={key} className="merge-conflict-row">
+                          <span>{conflict.floorName}: {conflict.entityId}</span>
+                          <select
+                            value={mergeConflictResolutions[key] || 'prefer_target'}
+                            onChange={e => setMergeConflictResolutions(prev => ({
+                              ...prev,
+                              [key]: e.target.value as 'prefer_source' | 'prefer_target',
+                            }))}
+                          >
+                            <option value="prefer_target">Keep target</option>
+                            <option value="prefer_source">Use source</option>
+                          </select>
+                        </div>
+                      );
+                    })}
+                    <button className="btn ghost" onClick={handleApplyMergePerEntity}>Apply Per-Entity Merge</button>
+                  </div>
+                )}
               </div>
             )}
 
