@@ -4,6 +4,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
 import { ADFProject, ProjectPresetLibrary, createProject } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
+import { propagateFloorDependencies } from './lib/systemGraph';
 import AIChat from './components/AIChat';
 import './App.css';
 
@@ -321,9 +322,14 @@ export default function App() {
                 floor={activeFloor}
                 layers={project.layers}
                 onFloorChange={(updated) => {
+                  const prevFloor = project.floors[activeFloorIndex];
+                  const { floor: propagatedFloor, report } = propagateFloorDependencies(prevFloor, updated);
+                  if (report.adjustedCount > 0) {
+                    setStatusMsg(`Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`);
+                  }
                   updateProject(p => {
                     const floors = [...p.floors];
-                    floors[activeFloorIndex] = updated;
+                    floors[activeFloorIndex] = propagatedFloor;
                     return { ...p, floors };
                   });
                 }}
@@ -334,9 +340,15 @@ export default function App() {
             {activeTab === '3d' && (
               <ThreeDTab floor={activeFloor} project={project} onStatusChange={setStatusMsg}
                 onEntityUpdate={(entities) => {
+                  const prevFloor = project.floors[activeFloorIndex];
+                  const nextFloor = { ...prevFloor, entities };
+                  const { floor: propagatedFloor, report } = propagateFloorDependencies(prevFloor, nextFloor);
+                  if (report.adjustedCount > 0) {
+                    setStatusMsg(`Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`);
+                  }
                   updateProject(p => {
                     const floors = [...p.floors];
-                    floors[activeFloorIndex] = { ...floors[activeFloorIndex], entities };
+                    floors[activeFloorIndex] = propagatedFloor;
                     return { ...p, floors };
                   });
                 }}
