@@ -11,7 +11,7 @@ import {
   uid,
 } from './adf';
 
-export const CURRENT_PROJECT_SCHEMA = 5;
+export const CURRENT_PROJECT_SCHEMA = 6;
 
 export interface MigrationReport {
   from: number;
@@ -76,7 +76,18 @@ function ensureConstraintRules(value: unknown): ConstraintRuleDefinition[] {
   if (!Array.isArray(value) || value.length === 0) {
     return defaultConstraintRules();
   }
-  return value as ConstraintRuleDefinition[];
+  const defaults = new Map(defaultConstraintRules().map(rule => [rule.kind, rule] as const));
+  return (value as Array<Partial<ConstraintRuleDefinition>>).map((rule, index) => {
+    const fallback = defaults.get(rule.kind as ConstraintRuleDefinition['kind']) || defaultConstraintRules()[index % defaultConstraintRules().length];
+    return {
+      id: typeof rule.id === 'string' && rule.id ? rule.id : uid(),
+      kind: (rule.kind || fallback.kind) as ConstraintRuleDefinition['kind'],
+      name: typeof rule.name === 'string' && rule.name ? rule.name : fallback.name,
+      enabled: typeof rule.enabled === 'boolean' ? rule.enabled : fallback.enabled,
+      weight: typeof rule.weight === 'number' && Number.isFinite(rule.weight) ? rule.weight : fallback.weight,
+      threshold: typeof rule.threshold === 'number' && Number.isFinite(rule.threshold) ? rule.threshold : fallback.threshold,
+    };
+  });
 }
 
 function normalizeBaseProject(raw: unknown): ADFProject {
@@ -168,6 +179,19 @@ export function migrateProjectData(raw: unknown): { project: ADFProject; report:
       };
       applied.push(step);
       schemaVersion = 5;
+      continue;
+    }
+
+    if (schemaVersion === 5) {
+      project.constraintRules = ensureConstraintRules(project.constraintRules);
+      const step: ProjectMigrationEntry = {
+        from: 5,
+        to: 6,
+        timestamp: new Date().toISOString(),
+        notes: 'Normalized constraint rule weights and defaults for living solver tuning.',
+      };
+      applied.push(step);
+      schemaVersion = 6;
       continue;
     }
 

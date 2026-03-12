@@ -13,6 +13,10 @@ import {
   WindowEntity,
 } from './adf';
 
+export interface ConstraintAutoAdjustOptions {
+  forceCycleBreak?: boolean;
+}
+
 export interface ConstraintAutoAdjustResult {
   floor: FloorPlan;
   adjustedCount: number;
@@ -20,7 +24,7 @@ export interface ConstraintAutoAdjustResult {
 }
 
 function findRule(rules: ConstraintRuleDefinition[] | undefined, kind: ConstraintRuleKind) {
-  return (rules || []).find(rule => rule.kind === kind && rule.enabled);
+  return (rules || []).find(rule => rule.kind === kind && rule.enabled && rule.weight > 0);
 }
 
 function severityRank(severity: ConstraintRuleSeverity): number {
@@ -192,11 +196,13 @@ export function evaluateConstraintRuleGraph(
 
 export function applyConstraintAutoAdjustments(
   floor: FloorPlan,
-  rules?: ConstraintRuleDefinition[]
+  rules?: ConstraintRuleDefinition[],
+  options?: ConstraintAutoAdjustOptions
 ): ConstraintAutoAdjustResult {
   const doorWidthRule = findRule(rules, 'door_width_min');
   const windowSillRule = findRule(rules, 'window_sill_min');
   const invalidValueRule = findRule(rules, 'invalid_value');
+  const conflictRule = findRule(rules, 'dimension_conflict');
 
   const minDoorWidth = typeof doorWidthRule?.threshold === 'number' ? doorWidthRule.threshold : 700;
   const minSillHeight = typeof windowSillRule?.threshold === 'number' ? windowSillRule.threshold : 450;
@@ -234,6 +240,45 @@ export function applyConstraintAutoAdjustments(
 
     return entity;
   });
+
+  if (conflictRule && (conflictRule.weight >= 1 || options?.forceCycleBreak)) {
+    const dimensionsByTarget = new Map<string, DimensionEntity[]>();
+    entities.forEach(entity => {
+      if (entity.type !== 'dimension') return;
+      const dim = entity as DimensionEntity;
+      if (!dim.constrainedEntityId || typeof dim.drivenValue !== 'number') return;
+      const list = dimensionsByTarget.get(dim.constrainedEntityId) || [];
+      list.push(dim);
+      dimensionsByTarget.set(dim.constrainedEntityId, list);
+    });
+
+    dimensionsByTarget.forEach((dims, targetId) => {
+      const values = Array.from(new Set(dims.map(dim => dim.drivenValue)));
+      if (values.length < 2) return;
+
+      const winner = dims
+        .slice()
+        .sort((a, b) => {
+          const aVal = typeof a.drivenValue === 'number' ? a.drivenValue : 0;
+          const bVal = typeof b.drivenValue === 'number' ? b.drivenValue : 0;
+          if (bVal !== aVal) return bVal - aVal;
+          return a.id.localeCompare(b.id);
+        })[0];
+
+      for (const dim of dims) {
+        if (dim.id === winner.id) continue;
+        const idx = entities.findIndex(entity => entity.id === dim.id);
+        if (idx < 0) continue;
+        adjustedCount += 1;
+        adjustments.push(`Cycle break ${targetId}: dimension ${dim.id} released`);
+        entities[idx] = {
+          ...(entities[idx] as DimensionEntity),
+          drivenValue: undefined,
+          constrainedEnd: 'end',
+        } as AnyEntity;
+      }
+    });
+  }
 
   return {
     floor: {

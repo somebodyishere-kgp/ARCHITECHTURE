@@ -820,6 +820,7 @@ export interface ConstraintRuleDefinition {
   kind: ConstraintRuleKind;
   name: string;
   enabled: boolean;
+  weight: number;
   threshold?: number;
 }
 
@@ -923,11 +924,11 @@ export interface ADFProject {
 
 export function defaultConstraintRules(): ConstraintRuleDefinition[] {
   return [
-    { id: uid(), kind: 'missing_target', name: 'Missing constrained target', enabled: true },
-    { id: uid(), kind: 'invalid_value', name: 'Invalid driven values', enabled: true },
-    { id: uid(), kind: 'dimension_conflict', name: 'Conflicting dimensions', enabled: true, threshold: 1 },
-    { id: uid(), kind: 'door_width_min', name: 'Door minimum width', enabled: true, threshold: 700 },
-    { id: uid(), kind: 'window_sill_min', name: 'Window minimum sill height', enabled: true, threshold: 450 },
+    { id: uid(), kind: 'missing_target', name: 'Missing constrained target', enabled: true, weight: 1 },
+    { id: uid(), kind: 'invalid_value', name: 'Invalid driven values', enabled: true, weight: 1 },
+    { id: uid(), kind: 'dimension_conflict', name: 'Conflicting dimensions', enabled: true, weight: 1.5, threshold: 1 },
+    { id: uid(), kind: 'door_width_min', name: 'Door minimum width', enabled: true, weight: 1.2, threshold: 700 },
+    { id: uid(), kind: 'window_sill_min', name: 'Window minimum sill height', enabled: true, weight: 1.2, threshold: 450 },
   ];
 }
 
@@ -943,7 +944,7 @@ export function createProject(name = 'New Project'): ADFProject {
   const rootBranchId = uid();
   return {
     version: '1.0',
-    schemaVersion: 5,
+    schemaVersion: 6,
     projectName: name,
     location: '',
     buildingType: 'residential',

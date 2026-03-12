@@ -4,9 +4,8 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-react';
 import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
-import { propagateFloorDependencies } from './lib/systemGraph';
 import { applyBranchMerge, applyBranchMergeResolutions, BranchMergePreview, captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, previewBranchMerge, switchToBranch } from './lib/branchGraph';
-import { applyConstraintAutoAdjustments, evaluateConstraintRuleGraph } from './lib/constraintRules';
+import { runLivingBuildingSolver } from './lib/livingSolver';
 import AIChat from './components/AIChat';
 import './App.css';
 
@@ -681,6 +680,26 @@ export default function App() {
 
   const selectedTrack = (project.timeline?.tracks || []).find(track => track.id === selectedTrackId) || null;
   const selectedTrackEvents = selectedTrack ? [...selectedTrack.events].sort((a, b) => a.time - b.time) : [];
+  const sortedConstraintRules = (project.constraintRules || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+
+  const handleUpdateConstraintRule = useCallback((
+    ruleId: string,
+    updates: Partial<{ enabled: boolean; weight: number; threshold: number | undefined }>
+  ) => {
+    updateProject(prev => ({
+      ...prev,
+      constraintRules: (prev.constraintRules || []).map(rule => {
+        if (rule.id !== ruleId) return rule;
+        return {
+          ...rule,
+          ...updates,
+          weight: typeof updates.weight === 'number' && Number.isFinite(updates.weight)
+            ? Math.max(0, updates.weight)
+            : rule.weight,
+        };
+      }),
+    }));
+  }, [updateProject]);
 
   const handleExportDXF = async () => {
     try {
@@ -920,11 +939,17 @@ export default function App() {
                 isTimelinePlaying={isTimelinePlaying}
                 onFloorChange={(updated) => {
                   const prevFloor = project.floors[activeFloorIndex];
-                  const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, updated);
-                  const autoAdjust = applyConstraintAutoAdjustments(propagatedFloor, project.constraintRules);
-                  const livingFloor = autoAdjust.floor;
-                  const constraintReport = evaluateConstraintRuleGraph(livingFloor, project.constraintRules);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoAdjust.adjustedCount > 0) {
+                  const solved = runLivingBuildingSolver(prevFloor, updated, project.constraintRules, { maxIterations: 8 });
+                  const report = solved.dependencyReport;
+                  const graph = solved.graph;
+                  const constraintReport = solved.constraintReport;
+                  const autoCount = Math.max(0, solved.convergence.totalAdjustments - report.adjustedCount);
+                  const convergeFlags = [
+                    solved.convergence.cycleBroken ? 'cycle-break' : '',
+                    solved.convergence.guardTriggered ? 'guard' : '',
+                    solved.convergence.capped ? 'cap' : '',
+                  ].filter(Boolean).join(', ');
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoCount > 0 || solved.convergence.iterations > 1) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
@@ -932,10 +957,11 @@ export default function App() {
                     const constraintWarn = constraintReport.warningCount > 0
                       ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
                       : '';
-                    const auto = autoAdjust.adjustedCount > 0
-                      ? ` + ${autoAdjust.adjustedCount} auto-adjustment${autoAdjust.adjustedCount === 1 ? '' : 's'}`
+                    const auto = autoCount > 0
+                      ? ` + ${autoCount} auto-adjustment${autoCount === 1 ? '' : 's'}`
                       : '';
-                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}`);
+                    const iter = solved.convergence.iterations > 1 ? ` [${solved.convergence.iterations} iters${convergeFlags ? `, ${convergeFlags}` : ''}]` : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}${iter}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -957,7 +983,7 @@ export default function App() {
                       constraintReport,
                     ].slice(-20);
                     floors[activeFloorIndex] = {
-                      ...livingFloor,
+                      ...solved.floor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
@@ -979,11 +1005,17 @@ export default function App() {
                 onEntityUpdate={(entities) => {
                   const prevFloor = project.floors[activeFloorIndex];
                   const nextFloor = { ...prevFloor, entities };
-                  const { floor: propagatedFloor, report, graph } = propagateFloorDependencies(prevFloor, nextFloor);
-                  const autoAdjust = applyConstraintAutoAdjustments(propagatedFloor, project.constraintRules);
-                  const livingFloor = autoAdjust.floor;
-                  const constraintReport = evaluateConstraintRuleGraph(livingFloor, project.constraintRules);
-                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoAdjust.adjustedCount > 0) {
+                  const solved = runLivingBuildingSolver(prevFloor, nextFloor, project.constraintRules, { maxIterations: 8 });
+                  const report = solved.dependencyReport;
+                  const graph = solved.graph;
+                  const constraintReport = solved.constraintReport;
+                  const autoCount = Math.max(0, solved.convergence.totalAdjustments - report.adjustedCount);
+                  const convergeFlags = [
+                    solved.convergence.cycleBroken ? 'cycle-break' : '',
+                    solved.convergence.guardTriggered ? 'guard' : '',
+                    solved.convergence.capped ? 'cap' : '',
+                  ].filter(Boolean).join(', ');
+                  if (report.adjustedCount > 0 || report.warnings.length > 0 || constraintReport.warningCount > 0 || autoCount > 0 || solved.convergence.iterations > 1) {
                     const base = report.adjustedCount > 0
                       ? `Living graph propagated ${report.adjustedCount} dependent update${report.adjustedCount === 1 ? '' : 's'}`
                       : 'Living graph diagnostics updated';
@@ -991,10 +1023,11 @@ export default function App() {
                     const constraintWarn = constraintReport.warningCount > 0
                       ? ` + ${constraintReport.warningCount} constraint warning${constraintReport.warningCount === 1 ? '' : 's'}`
                       : '';
-                    const auto = autoAdjust.adjustedCount > 0
-                      ? ` + ${autoAdjust.adjustedCount} auto-adjustment${autoAdjust.adjustedCount === 1 ? '' : 's'}`
+                    const auto = autoCount > 0
+                      ? ` + ${autoCount} auto-adjustment${autoCount === 1 ? '' : 's'}`
                       : '';
-                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}`);
+                    const iter = solved.convergence.iterations > 1 ? ` [${solved.convergence.iterations} iters${convergeFlags ? `, ${convergeFlags}` : ''}]` : '';
+                    setStatusMsg(`${base}${warn}${constraintWarn}${auto}${iter}`);
                   }
                   updateProject(p => {
                     const floors = [...p.floors];
@@ -1016,7 +1049,7 @@ export default function App() {
                       constraintReport,
                     ].slice(-20);
                     floors[activeFloorIndex] = {
-                      ...livingFloor,
+                      ...solved.floor,
                       dependencyMetadata: {
                         lastReport: recentReports[recentReports.length - 1],
                         recentReports,
@@ -1097,6 +1130,48 @@ export default function App() {
                 )}
               </div>
             )}
+
+            <div className="rule-tuning-panel">
+              <div className="rule-tuning-header">Living Rules</div>
+              <div className="rule-tuning-list">
+                {sortedConstraintRules.map(rule => (
+                  <div key={rule.id} className="rule-tuning-row">
+                    <label className="rule-tuning-name">
+                      <input
+                        type="checkbox"
+                        checked={rule.enabled}
+                        onChange={e => handleUpdateConstraintRule(rule.id, { enabled: e.target.checked })}
+                      />
+                      <span>{rule.name}</span>
+                    </label>
+                    <div className="rule-tuning-controls">
+                      <label>
+                        W
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={rule.weight}
+                          onChange={e => handleUpdateConstraintRule(rule.id, { weight: Number(e.target.value) })}
+                        />
+                      </label>
+                      <label>
+                        T
+                        <input
+                          type="number"
+                          step={1}
+                          value={typeof rule.threshold === 'number' ? rule.threshold : ''}
+                          onChange={e => {
+                            const v = e.target.value;
+                            handleUpdateConstraintRule(rule.id, { threshold: v === '' ? undefined : Number(v) });
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
 
             <div className="timeline-event-list">
               {selectedTrackEvents.length === 0 ? (
