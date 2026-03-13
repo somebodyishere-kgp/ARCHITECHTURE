@@ -121,7 +121,7 @@ jobs:
   # ─── Create GitHub Release on tag push ──────────────────────────────────────
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,9 +138,9 @@ jobs:
           ls -la release-files/
 
       - name: Validate manual release tag
-        if: github.event_name == 'workflow_dispatch' && inputs.create_release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
         run: |
-          if [ -z "${{ inputs.release_tag }}" ]; then
+          if [ -z "${{ github.event.inputs.release_tag }}" ]; then
             echo "release_tag is required when create_release=true"
             exit 1
           fi
@@ -148,11 +148,11 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.event.inputs.release_tag }}
           draft: false
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
           generate_release_notes: true
-          name: ArchFlow ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+          name: ArchFlow ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.event.inputs.release_tag }}
           body: |
             ## ArchFlow Desktop App
             
