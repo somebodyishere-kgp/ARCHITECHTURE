@@ -28,6 +28,8 @@ const EXAMPLE_PROMPTS = [
   'Contemporary house with courtyard, 4 bedrooms, Delhi',
 ];
 
+const DEFAULT_OPENROUTER_MODEL = 'openrouter/hunter-alpha';
+
 export default function AIChat({ project, onApplyLayout, onClose, onStatusChange }: Props) {
   const [messages, setMessages] = useState<Message[]>([{
     id: 'welcome',
@@ -38,6 +40,7 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [modelName, setModelName] = useState(DEFAULT_OPENROUTER_MODEL);
   const [showSettings, setShowSettings] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -102,6 +105,7 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
       const layout = await invoke<Record<string, unknown>>('generate_floor_plan_ai', {
         prompt: pipeline.executionPrompt,
         apiKey: apiKey || null,
+        model: modelName || DEFAULT_OPENROUTER_MODEL,
       });
 
       const wrappedLayout: Record<string, unknown> = {
@@ -175,6 +179,10 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
           <div className="label">OpenAI API Key (optional)</div>
           <input type="password" placeholder="sk-…" value={apiKey}
             onChange={e => setApiKey(e.target.value)}
+          />
+          <div className="label" style={{ marginTop: 8 }}>Model</div>
+          <input type="text" placeholder="openrouter/hunter-alpha" value={modelName}
+            onChange={e => setModelName(e.target.value)}
           />
           <div style={{ fontSize: 10, color:'var(--text-muted)', marginTop: 4 }}>
             Without a key, ArchFlow uses its built-in layout engine. Add an OpenAI key for more sophisticated AI-generated plans.

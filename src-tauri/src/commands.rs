@@ -226,12 +226,18 @@ pub async fn export_dxf(path: String, floor_data: serde_json::Value) -> Result<S
 
 /// Parse a text prompt and generate a 2D floor plan layout leveraging an AI bridge.
 #[tauri::command]
-pub async fn generate_floor_plan_ai(prompt: String, api_key: Option<String>, constraints: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+pub async fn generate_floor_plan_ai(
+    prompt: String,
+    api_key: Option<String>,
+    constraints: Option<serde_json::Value>,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
     let payload = serde_json::json!({
         "action": "generate_floor_plan",
         "prompt": prompt,
         "api_key": api_key,
-        "constraints": constraints.unwrap_or_else(|| serde_json::json!({}))
+        "constraints": constraints.unwrap_or_else(|| serde_json::json!({})),
+        "model": model,
     });
 
     // We reuse the freecad bridge structure, but we'll create a dedicated ai_bridge.py soon. 
