@@ -55,6 +55,14 @@ export interface CandidateProposal {
   confidence: number;
 }
 
+export interface AITool {
+  id: string;
+  name: string;
+  purpose: string;
+  inputShape: string;
+  outputShape: string;
+}
+
 export interface PipelineResult {
   auditId: string;
   intent: DesignIntent;
@@ -62,6 +70,8 @@ export interface PipelineResult {
   designSpec: Record<string, unknown>;
   executionPrompt: string;
   proposals: CandidateProposal[];
+  toolRegistry: AITool[];
+  activatedToolIds: string[];
 }
 
 interface PipelineInput {
@@ -247,6 +257,59 @@ function buildCandidateProposals(basePrompt: string, strategies: string[]): Cand
   });
 }
 
+function buildToolRegistry(): AITool[] {
+  return [
+    {
+      id: 'intent-interpreter',
+      name: 'Intent Interpreter',
+      purpose: 'Convert natural language and config rules into structured design intent.',
+      inputShape: 'prompt + conversation context',
+      outputShape: 'DesignIntent',
+    },
+    {
+      id: 'site-context-analyzer',
+      name: 'Site Context Analyzer',
+      purpose: 'Infer climate and contextual constraints from location/site metadata.',
+      inputShape: 'location + site dimensions + building codes',
+      outputShape: 'context profile + climate hints',
+    },
+    {
+      id: 'constraint-compiler',
+      name: 'Constraint Compiler',
+      purpose: 'Compile explicit and inferred constraints into deterministic hard rules.',
+      inputShape: 'DesignIntent + building codes',
+      outputShape: 'hard constraints',
+    },
+    {
+      id: 'program-synthesizer',
+      name: 'Program Synthesizer',
+      purpose: 'Generate area targets and spatial program from occupancy and project type.',
+      inputShape: 'project type + capacity',
+      outputShape: 'program areas + functional graph seeds',
+    },
+    {
+      id: 'proposal-ranker',
+      name: 'Proposal Ranker',
+      purpose: 'Generate and rank candidate layout strategies.',
+      inputShape: 'execution prompt + strategy templates',
+      outputShape: 'ranked CandidateProposal[]',
+    },
+    {
+      id: 'layout-validator',
+      name: 'Layout Validator',
+      purpose: 'Assess compliance and feasibility before execution.',
+      inputShape: 'constraints + proposed layout metrics',
+      outputShape: 'scores + warnings',
+    },
+  ];
+}
+
+function pickActivatedTools(intent: DesignIntent, hasCodes: boolean): string[] {
+  const ids = ['intent-interpreter', 'constraint-compiler', 'program-synthesizer', 'proposal-ranker', 'layout-validator'];
+  if (hasCodes || intent.site.location !== 'unspecified') ids.unshift('site-context-analyzer');
+  return ids;
+}
+
 export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
   const prompt = input.prompt.trim();
   const fallbackLocation = input.project.location || 'unspecified';
@@ -277,6 +340,9 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
     explicit_rules: rules,
   };
 
+  const toolRegistry = buildToolRegistry();
+  const activatedToolIds = pickActivatedTools(intent, Boolean(input.buildingCodes && Object.keys(input.buildingCodes).length > 0));
+
   const stage1: PipelineAuditStage = {
     phase: 'state_analysis',
     module: 'spatial',
@@ -287,6 +353,7 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
       `capacity=${intent.capacity ?? 'unspecified'}`,
       `explicit_rules=${intent.explicit_rules.length}`,
       ...projectContext,
+      `tools=${activatedToolIds.join(',')}`,
     ],
     deterministic: true,
     output: { intent, audit_id: auditId },
@@ -307,6 +374,7 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
       location,
       climate_hints: climateHints,
       building_codes_present: Boolean(input.buildingCodes && Object.keys(input.buildingCodes).length > 0),
+      activated_tools: activatedToolIds,
     },
   };
 
@@ -397,6 +465,7 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
         candidate_strategies: candidateStrategies,
         project_context: projectContext,
         audit_id: auditId,
+        activated_tools: activatedToolIds,
       },
     },
   };
@@ -410,5 +479,7 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
     designSpec: stage6.output.design_spec as Record<string, unknown>,
     executionPrompt,
     proposals,
+    toolRegistry,
+    activatedToolIds,
   };
 }

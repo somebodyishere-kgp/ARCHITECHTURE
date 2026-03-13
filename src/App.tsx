@@ -776,6 +776,39 @@ export default function App() {
     setStatusMsg('AI floor plan applied — pipeline audit saved to project metadata');
   };
 
+  const handleApplyAILayoutAsVariant = (layoutData: Record<string, unknown>) => {
+    const pipeline = layoutData.ai_pipeline as Record<string, unknown> | undefined;
+    const proposal = (pipeline?.proposal as Record<string, unknown> | undefined) || {};
+    const strategy = String(proposal.strategy || 'AI Option');
+    const variantName = `AI ${strategy}`.slice(0, 48);
+    const objective = String((pipeline?.design_spec as Record<string, unknown> | undefined)?.architectural_style || 'AI generated concept');
+    const designSpec = (pipeline?.design_spec as Record<string, unknown> | undefined) || undefined;
+
+    updateProject(prev => {
+      const created = createDesignVariant(prev, variantName, objective);
+      const next = syncDesignGraph(created.project);
+      const floors = [...next.floors];
+      if (floors[0]) {
+        floors[0] = {
+          ...floors[0],
+          entities: (layoutData.entities as Record<string, unknown>[]).map(e => e as never) || [],
+        };
+      }
+      return {
+        ...next,
+        generatedFromPrompt: layoutData.generated_from_prompt as string,
+        buildingType: layoutData.building_type as string,
+        layers: (layoutData.layers as never[]) || next.layers,
+        floors,
+        aiPipelineReport: pipeline,
+        designSpecification: designSpec,
+      };
+    });
+
+    setActiveTab('graph');
+    setStatusMsg(`AI option branched as design variant: ${variantName}`);
+  };
+
   return (
     <div className="app-root">
       {/* Custom Titlebar */}
@@ -1250,6 +1283,7 @@ export default function App() {
           <AIChat
             project={project}
             onApplyLayout={handleApplyAILayout}
+            onApplyLayoutAsVariant={handleApplyAILayoutAsVariant}
             onClose={() => setShowAI(false)}
             onStatusChange={setStatusMsg}
           />

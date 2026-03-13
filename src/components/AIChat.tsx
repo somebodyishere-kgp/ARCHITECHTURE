@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Send, Bot, User, Sparkles, Loader, ChevronDown } from 'lucide-react';
 import { ADFProject } from '../lib/adf';
@@ -8,6 +8,7 @@ import './AIChat.css';
 interface Props {
   project: ADFProject;
   onApplyLayout: (layout: Record<string, unknown>) => void;
+  onApplyLayoutAsVariant: (layout: Record<string, unknown>) => void;
   onClose: () => void;
   onStatusChange: (s: string) => void;
 }
@@ -30,6 +31,20 @@ const EXAMPLE_PROMPTS = [
 
 const DEFAULT_OPENROUTER_MODEL = 'openrouter/hunter-alpha';
 
+interface OptionConstraintBadge {
+  label: string;
+  severity: 'ok' | 'warning' | 'error' | 'info';
+}
+
+interface GeneratedOption {
+  id: string;
+  strategy: string;
+  confidence: number;
+  score: number;
+  layout: Record<string, unknown>;
+  badges: OptionConstraintBadge[];
+}
+
 function scoreLayout(layout: Record<string, unknown>, confidence: number): number {
   const entities = Array.isArray(layout.entities) ? layout.entities.length : 0;
   const area = typeof layout.total_area === 'number' ? layout.total_area : 0;
@@ -45,7 +60,52 @@ function summarizeConversation(messages: Message[]): string {
   return `Conversation context: ${recent.join(' | ')}`;
 }
 
-export default function AIChat({ project, onApplyLayout, onClose, onStatusChange }: Props) {
+function countEntityTypes(layout: Record<string, unknown>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const entities = Array.isArray(layout.entities) ? layout.entities as Array<Record<string, unknown>> : [];
+  entities.forEach(entity => {
+    const type = String(entity.type || 'unknown');
+    counts[type] = (counts[type] || 0) + 1;
+  });
+  return counts;
+}
+
+function evaluateConstraintBadges(
+  layout: Record<string, unknown>,
+  intent: Record<string, unknown>
+): OptionConstraintBadge[] {
+  const counts = countEntityTypes(layout);
+  const badges: OptionConstraintBadge[] = [];
+  const doors = counts.door || 0;
+  const windows = counts.window || 0;
+  const walls = counts.wall || 0;
+  const totalArea = typeof layout.total_area === 'number' ? layout.total_area : 0;
+  const capacity = typeof intent.capacity === 'number' ? intent.capacity : 0;
+
+  if (doors <= 0) badges.push({ label: 'No entry door detected', severity: 'error' });
+  else badges.push({ label: 'Entry access detected', severity: 'ok' });
+
+  if (windows <= 0) badges.push({ label: 'Low daylight openings', severity: 'warning' });
+  else badges.push({ label: `Windows ${windows}`, severity: 'ok' });
+
+  if (walls < 4) badges.push({ label: 'Envelope may be incomplete', severity: 'warning' });
+  else badges.push({ label: `Walls ${walls}`, severity: 'ok' });
+
+  if (capacity > 0) {
+    const areaPerPerson = totalArea > 0 ? totalArea / capacity : 0;
+    if (areaPerPerson > 0 && areaPerPerson < 1.2) badges.push({ label: 'High occupancy density', severity: 'warning' });
+    else badges.push({ label: 'Occupancy density acceptable', severity: 'ok' });
+  }
+
+  const explicitRules = Array.isArray(intent.explicit_rules) ? intent.explicit_rules as Array<Record<string, unknown>> : [];
+  if (explicitRules.length > 0) {
+    badges.push({ label: `${explicitRules.length} explicit rule(s) require simulation validation`, severity: 'info' });
+  }
+
+  return badges;
+}
+
+export default function AIChat({ project, onApplyLayout, onApplyLayoutAsVariant, onClose, onStatusChange }: Props) {
   const [messages, setMessages] = useState<Message[]>([{
     id: 'welcome',
     role: 'assistant',
@@ -57,7 +117,33 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
   const [apiKey, setApiKey] = useState('');
   const [modelName, setModelName] = useState(DEFAULT_OPENROUTER_MODEL);
   const [showSettings, setShowSettings] = useState(false);
+  const [generatedOptions, setGeneratedOptions] = useState<GeneratedOption[]>([]);
+  const [compareLeftId, setCompareLeftId] = useState('');
+  const [compareRightId, setCompareRightId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const compareLeft = generatedOptions.find(option => option.id === compareLeftId);
+  const compareRight = generatedOptions.find(option => option.id === compareRightId);
+  const optionsDiff = useMemo(() => {
+    if (!compareLeft || !compareRight || compareLeft.id === compareRight.id) return null;
+    const leftArea = typeof compareLeft.layout.total_area === 'number' ? compareLeft.layout.total_area : 0;
+    const rightArea = typeof compareRight.layout.total_area === 'number' ? compareRight.layout.total_area : 0;
+    const leftEntities = Array.isArray(compareLeft.layout.entities) ? compareLeft.layout.entities.length : 0;
+    const rightEntities = Array.isArray(compareRight.layout.entities) ? compareRight.layout.entities.length : 0;
+    const leftTypes = countEntityTypes(compareLeft.layout);
+    const rightTypes = countEntityTypes(compareRight.layout);
+    const keys = Array.from(new Set([...Object.keys(leftTypes), ...Object.keys(rightTypes)])).sort((a, b) => a.localeCompare(b));
+    const typeDelta = keys
+      .map(key => ({ type: key, delta: (rightTypes[key] || 0) - (leftTypes[key] || 0) }))
+      .filter(entry => entry.delta !== 0)
+      .slice(0, 6);
+    return {
+      areaDelta: rightArea - leftArea,
+      entityDelta: rightEntities - leftEntities,
+      scoreDelta: compareRight.score - compareLeft.score,
+      typeDelta,
+    };
+  }, [compareLeft, compareRight]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -109,6 +195,14 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
         content: `Pipeline audit trail:\n${stageSummary}`,
       });
 
+      const toolNames = pipeline.activatedToolIds
+        .map(id => pipeline.toolRegistry.find(tool => tool.id === id)?.name || id)
+        .join(', ');
+      addMessage({
+        role: 'assistant',
+        content: `Activated AI tools: ${toolNames}`,
+      });
+
       const designSpecPreview = JSON.stringify(pipeline.designSpec, null, 2).slice(0, 900);
       addMessage({
         role: 'assistant',
@@ -156,13 +250,29 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
       }
 
       generated.sort((a, b) => b.score - a.score);
+      const enrichedOptions: GeneratedOption[] = generated.map(option => ({
+        id: option.proposal.id,
+        strategy: option.proposal.strategy,
+        confidence: option.proposal.confidence,
+        score: option.score,
+        layout: option.wrappedLayout,
+        badges: evaluateConstraintBadges(option.layout, pipeline.intent as unknown as Record<string, unknown>),
+      }));
+      setGeneratedOptions(enrichedOptions);
+      if (enrichedOptions.length > 0) {
+        setCompareLeftId(enrichedOptions[0].id);
+        setCompareRightId(enrichedOptions[Math.min(1, enrichedOptions.length - 1)].id);
+      }
+
       generated.forEach((option, index) => {
         const entityCount = (option.layout.entities as unknown[])?.length ?? 0;
         const area = typeof option.layout.total_area === 'number' ? option.layout.total_area.toFixed(0) : '?';
         const recommendation = index === 0 ? ' (recommended)' : '';
+        const badges = evaluateConstraintBadges(option.layout, pipeline.intent as unknown as Record<string, unknown>);
+        const badgeLine = badges.map(b => `[${b.severity.toUpperCase()}] ${b.label}`).join(' | ');
         addMessage({
           role: 'assistant',
-          content: `Option ${index + 1}${recommendation}\n- Strategy: ${option.proposal.strategy}\n- Score: ${option.score.toFixed(1)}\n- Entities: ${entityCount}\n- Area: ${area} m2\n- Confidence: ${option.proposal.confidence}\n\nClick Apply to load this option into Plans tab.`,
+          content: `Option ${index + 1}${recommendation}\n- Strategy: ${option.proposal.strategy}\n- Score: ${option.score.toFixed(1)}\n- Entities: ${entityCount}\n- Area: ${area} m2\n- Confidence: ${option.proposal.confidence}\n- Constraint badges: ${badgeLine}\n\nUse Apply for direct update, or Apply as Variant to branch this option in the Design Graph.`,
           layout: option.wrappedLayout,
         });
       });
@@ -245,6 +355,40 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
 
       {/* Messages */}
       <div className="ai-messages">
+        {generatedOptions.length > 1 && (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 8, background: 'var(--bg-overlay)' }}>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+              Diff view between AI options
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+              <select value={compareLeftId} onChange={e => setCompareLeftId(e.target.value)}>
+                {generatedOptions.map(option => (
+                  <option key={`left-${option.id}`} value={option.id}>
+                    {option.strategy} · score {option.score.toFixed(1)}
+                  </option>
+                ))}
+              </select>
+              <select value={compareRightId} onChange={e => setCompareRightId(e.target.value)}>
+                {generatedOptions.map(option => (
+                  <option key={`right-${option.id}`} value={option.id}>
+                    {option.strategy} · score {option.score.toFixed(1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {optionsDiff ? (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'grid', gap: 4 }}>
+                <div>Score delta: {optionsDiff.scoreDelta > 0 ? '+' : ''}{optionsDiff.scoreDelta.toFixed(1)}</div>
+                <div>Entity delta: {optionsDiff.entityDelta > 0 ? '+' : ''}{optionsDiff.entityDelta}</div>
+                <div>Area delta: {optionsDiff.areaDelta > 0 ? '+' : ''}{optionsDiff.areaDelta.toFixed(1)} m2</div>
+                <div>Type delta: {optionsDiff.typeDelta.length ? optionsDiff.typeDelta.map(entry => `${entry.type} ${entry.delta > 0 ? '+' : ''}${entry.delta}`).join(', ') : 'no significant change'}</div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Pick two different options for diff insights.</div>
+            )}
+          </div>
+        )}
+
         {messages.map(msg => (
           <div key={msg.id} className={`ai-msg ai-msg-${msg.role}`}>
             <div className="ai-msg-avatar">
@@ -255,10 +399,16 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
                 {renderMessageContent(msg.content)}
               </div>
               {msg.layout && (
-                <button className="btn primary" style={{ marginTop: 8, fontSize: 11 }}
-                  onClick={() => { onApplyLayout(msg.layout!); onStatusChange('AI layout applied to Plans tab'); }}>
-                  <Sparkles size={11}/> Apply to Plans Tab
-                </button>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  <button className="btn primary" style={{ fontSize: 11 }}
+                    onClick={() => { onApplyLayout(msg.layout!); onStatusChange('AI layout applied to Plans tab'); }}>
+                    <Sparkles size={11}/> Apply to Plans Tab
+                  </button>
+                  <button className="btn ghost" style={{ fontSize: 11 }}
+                    onClick={() => { onApplyLayoutAsVariant(msg.layout!); onStatusChange('AI option applied as a new design graph variant'); }}>
+                    <Sparkles size={11}/> Apply as Variant
+                  </button>
+                </div>
               )}
               <div className="ai-msg-time">
                 {msg.timestamp.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}
