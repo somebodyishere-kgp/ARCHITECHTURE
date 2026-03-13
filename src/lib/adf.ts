@@ -950,6 +950,8 @@ export interface ADFProject {
   constraintRules?: ConstraintRuleDefinition[];
   buildingCodes?: Record<string, unknown>;
   generatedFromPrompt?: string;
+  aiPipelineReport?: Record<string, unknown>;
+  designSpecification?: Record<string, unknown>;
 }
 
 export function defaultConstraintRules(): ConstraintRuleDefinition[] {
@@ -975,7 +977,7 @@ export function createProject(name = 'New Project'): ADFProject {
   const rootGraphNodeId = uid();
   return {
     version: '1.0',
-    schemaVersion: 6,
+    schemaVersion: 7,
     projectName: name,
     location: '',
     buildingType: 'residential',

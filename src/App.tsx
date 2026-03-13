@@ -752,6 +752,8 @@ export default function App() {
   };
 
   const handleApplyAILayout = (layoutData: Record<string, unknown>) => {
+    const pipeline = layoutData.ai_pipeline as Record<string, unknown> | undefined;
+    const designSpec = (pipeline?.design_spec as Record<string, unknown> | undefined) || undefined;
     updateProject(p => {
       const updatedFloors = [...p.floors];
       if (updatedFloors[0]) {
@@ -766,10 +768,12 @@ export default function App() {
         buildingType: layoutData.building_type as string,
         layers: (layoutData.layers as never[]) || p.layers,
         floors: updatedFloors,
+        aiPipelineReport: pipeline,
+        designSpecification: designSpec,
       };
     });
     setActiveTab('plans');
-    setStatusMsg('AI floor plan applied — review and approve in Plans tab');
+    setStatusMsg('AI floor plan applied — pipeline audit saved to project metadata');
   };
 
   return (

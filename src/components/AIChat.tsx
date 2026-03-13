@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Send, Bot, User, Sparkles, MapPin, Loader, ChevronDown } from 'lucide-react';
+import { X, Send, Bot, User, Sparkles, Loader, ChevronDown } from 'lucide-react';
 import { ADFProject } from '../lib/adf';
+import { runArchflowAIPipeline } from '../lib/aiPipeline';
 import './AIChat.css';
 
 interface Props {
@@ -31,7 +32,7 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
   const [messages, setMessages] = useState<Message[]>([{
     id: 'welcome',
     role: 'assistant',
-    content: `👋 I'm your **ArchFlow AI assistant**.\n\nDescribe the building you want to design — include:\n- **Building type** (house, museum, office…)\n- **Size** (area in sqm, number of floors)\n- **Style** (brutalist, contemporary, traditional…)\n- **Location** (for code-compliant design)\n\nI'll generate a floor plan you can review and approve.`,
+    content: `I'm your **ArchFlow AI assistant**.\n\nThis workspace now runs a deterministic design pipeline:\n- State Analysis\n- Context Understanding\n- Constraint Evaluation\n- Action Generation\n- Proposal Validation\n- Execution\n\nSupported intelligence modules:\n- Environmental\n- Spatial\n- Behavioral\n- Operational\n- Reflective\n\nDescribe your design intent and optional explicit rules (example: TargetTemperature = 23C).`,
     timestamp: new Date(),
   }]);
   const [inputText, setInputText] = useState('');
@@ -54,37 +55,73 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
     setInputText('');
     addMessage({ role: 'user', content: text });
     setIsGenerating(true);
-    onStatusChange('AI is designing your floor plan…');
+    onStatusChange('AI pipeline is processing design intent…');
 
     try {
-      // Step 1: Check for location
-      const locationKeywords = ['goa', 'mumbai', 'delhi', 'bangalore', 'chennai', 'pune', 'hyderabad', 'kolkata', 'india'];
-      const detectedLocation = locationKeywords.find(l => text.toLowerCase().includes(l));
+      const locationHintMatch = text.match(/(?:in|near|at)\s+([a-zA-Z\s,]+?)(?:\.|,|for|with|on|$)/i);
+      const locationHint = locationHintMatch?.[1]?.trim();
+      let buildingCodes: Record<string, unknown> | undefined;
 
-      if (detectedLocation) {
-        addMessage({ role: 'assistant', content: `📍 Detected location: **${detectedLocation.charAt(0).toUpperCase() + detectedLocation.slice(1)}**\nFetching applicable building codes…` });
-        const codes = await invoke<Record<string, unknown>>('get_building_codes', { location: detectedLocation });
-        const codesStr = JSON.stringify((codes.codes as Record<string,unknown>), null, 2).slice(0, 600);
-        addMessage({ role: 'assistant', content: `**Building Regulations Found:**\n\`\`\`\n${codesStr}\n\`\`\`\nGenerating a code-compliant floor plan…` });
+      if (locationHint) {
+        addMessage({ role: 'assistant', content: `Detected location context: **${locationHint}**\nRetrieving code references for hard-constraint seeding.` });
+        try {
+          const codes = await invoke<Record<string, unknown>>('get_building_codes', { location: locationHint });
+          buildingCodes = (codes?.codes as Record<string, unknown>) || codes;
+          const keys = Object.keys(buildingCodes || {}).slice(0, 8);
+          if (keys.length > 0) {
+            addMessage({ role: 'assistant', content: `Building-code context loaded: ${keys.join(', ')}` });
+          }
+        } catch {
+          addMessage({ role: 'assistant', content: 'Building-code retrieval unavailable for this location; using default constraint set.' });
+        }
       }
 
-      // Step 2: Generate floor plan
-      addMessage({ role: 'assistant', content: `🏗️ Designing: *"${text}"*\nAnalyzing room requirements and generating layout…` });
+      const pipeline = runArchflowAIPipeline({
+        prompt: text,
+        project,
+        buildingCodes,
+      });
+
+      const stageSummary = pipeline.stages
+        .map(stage => `${stage.phase} [${stage.module}] -> ${stage.summary}`)
+        .join('\n');
+
+      addMessage({
+        role: 'assistant',
+        content: `Pipeline audit trail:\n${stageSummary}`,
+      });
+
+      const designSpecPreview = JSON.stringify(pipeline.designSpec, null, 2).slice(0, 900);
+      addMessage({
+        role: 'assistant',
+        content: `Structured design specification:\n${designSpecPreview}`,
+      });
+
+      addMessage({ role: 'assistant', content: 'Execution phase: generating geometry proposal from validated design spec.' });
 
       const layout = await invoke<Record<string, unknown>>('generate_floor_plan_ai', {
-        prompt: text,
+        prompt: pipeline.executionPrompt,
         apiKey: apiKey || null,
       });
+
+      const wrappedLayout: Record<string, unknown> = {
+        ...layout,
+        ai_pipeline: {
+          stages: pipeline.stages,
+          design_spec: pipeline.designSpec,
+          execution_prompt: pipeline.executionPrompt,
+        },
+      };
 
       const entityCount = (layout.entities as unknown[])?.length ?? 0;
       const area = typeof layout.total_area === 'number' ? layout.total_area.toFixed(0) : '?';
 
       addMessage({
         role: 'assistant',
-        content: `✅ **Floor plan generated!**\n\n- **${entityCount} entities** created (walls, doors, windows, labels)\n- **Approx. area:** ${area} m²\n- **Building type:** ${layout.building_type || 'General'}\n\nReview the plan in the **Plans tab**. You can edit it manually, add/remove walls, or ask me to make changes.\n\n*Click "Apply to Plans" to load this design.*`,
-        layout,
+        content: `Floor plan generated from the multi-stage pipeline.\n\n- ${entityCount} entities created\n- Approx. area: ${area} m2\n- Building type: ${layout.building_type || 'General'}\n\nReview in the Plans tab, then iterate with targeted prompts (daylight, height, circulation, energy).`,
+        layout: wrappedLayout,
       });
-      onStatusChange('AI floor plan ready — review in Plans tab');
+      onStatusChange('AI pipeline complete — proposal ready in Plans tab');
     } catch (err) {
       addMessage({ role: 'assistant', content: `❌ Error generating floor plan: ${err}\n\nPlease try again or simplify your prompt.` });
       onStatusChange('AI generation failed');

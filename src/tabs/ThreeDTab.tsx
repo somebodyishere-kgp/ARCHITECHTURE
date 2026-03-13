@@ -26,7 +26,7 @@ import {
   FurnitureEntity, ApplianceEntity, FixtureEntity,
   StructuralMemberEntity, FootingEntity, PileEntity, RetainingWallEntity,
   PipeEntity, DuctEntity, ConduitEntity, CableTrayEntity, MEPDeviceEntity,
-  FenceSiteEntity, LandscapeEntity, PavingEntity,
+  FenceSiteEntity, LandscapeEntity, ParkingEntity, PavingEntity,
   SectionMarkEntity, ElevationMarkEntity,
   LineEntity, CircleEntity, ArcEntity, RectangleEntity, PolylineEntity,
   dist
@@ -202,7 +202,15 @@ type QuickAssetKind =
   | 'fridge'
   | 'washer'
   | 'sink'
-  | 'toilet';
+  | 'toilet'
+  | 'conference_table'
+  | 'bookshelf'
+  | 'tree'
+  | 'ev_bay'
+  | 'solar_panel'
+  | 'sprinkler'
+  | 'diffuser'
+  | 'pump';
 
 const mmToM = 0.001;
 
@@ -1089,6 +1097,42 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
         break;
       case 'toilet':
         entity = { id, type: 'fixture', layer: 'A-Fixture', x: baseX + offset, y: baseY + offset, width: 400, depth: 700, rotation: 0, category: 'toilet', name: 'Toilet' } as FixtureEntity;
+        break;
+      case 'conference_table':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 3200, depth: 1200, rotation: 0, category: 'conference_table', name: 'Conference Table' } as FurnitureEntity;
+        break;
+      case 'bookshelf':
+        entity = { id, type: 'furniture', layer: 'A-Furniture', x: baseX + offset, y: baseY + offset, width: 900, depth: 350, rotation: 0, category: 'shelf', name: 'Bookshelf' } as FurnitureEntity;
+        break;
+      case 'tree':
+        entity = { id, type: 'landscape', layer: 'A-Site', x: baseX + offset, y: baseY + offset, radius: 1800, plantType: 'tree', species: 'Generic Deciduous' } as LandscapeEntity;
+        break;
+      case 'ev_bay':
+        entity = { id, type: 'parking', layer: 'A-Site', x: baseX + offset, y: baseY + offset, width: 3000, depth: 5500, rotation: 0, spaces: 1, parkingType: 'ev' } as ParkingEntity;
+        break;
+      case 'solar_panel':
+        entity = {
+          id,
+          type: 'paving',
+          layer: 'A-Roof',
+          points: [
+            { x: baseX + offset, y: baseY + offset },
+            { x: baseX + offset + 2200, y: baseY + offset },
+            { x: baseX + offset + 2200, y: baseY + offset + 1200 },
+            { x: baseX + offset, y: baseY + offset + 1200 },
+          ],
+          material: 'stone',
+          thickness: 80,
+        } as PavingEntity;
+        break;
+      case 'sprinkler':
+        entity = { id, type: 'sprinkler', layer: 'A-Fire', x: baseX + offset, y: baseY + offset, rotation: 0, model: 'OS-Sprinkler' } as MEPDeviceEntity;
+        break;
+      case 'diffuser':
+        entity = { id, type: 'diffuser', layer: 'A-HVAC', x: baseX + offset, y: baseY + offset, rotation: 0, model: 'OS-Diffuser' } as MEPDeviceEntity;
+        break;
+      case 'pump':
+        entity = { id, type: 'pump', layer: 'A-HVAC', x: baseX + offset, y: baseY + offset, rotation: 0, model: 'OS-Pump' } as MEPDeviceEntity;
         break;
     }
 
@@ -2735,6 +2779,7 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
     if (f.category === 'chair') h = 0.45;
     else if (f.category === 'bed') h = 0.5;
     else if (f.category === 'cabinet' || f.category === 'shelf') h = 1.8;
+    else if (f.category === 'conference_table') h = 0.76;
     else if (f.category === 'sofa') h = 0.7;
     else if (f.category === 'fridge') h = 1.7;
     else if (f.category === 'toilet') h = 0.4;
@@ -3078,6 +3123,17 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
           if (mesh) {
             mesh.rotation.x = -Math.PI / 2;
             mesh.position.y = 0.01;
+          }
+          break;
+        }
+        case 'parking': {
+          if (!visibleCategories.site) break;
+          const pk = entity as ParkingEntity;
+          const geo = new THREE.BoxGeometry(pk.width * mmToM, 0.04, pk.depth * mmToM);
+          const mesh = addArchMesh(geo, makeMaterial('stone'), pk.id, 'parking');
+          if (mesh) {
+            mesh.position.set(pk.x * mmToM + (pk.width * mmToM) / 2, 0.03, pk.y * mmToM + (pk.depth * mmToM) / 2);
+            mesh.rotation.y = -(pk.rotation || 0);
           }
           break;
         }
@@ -3568,6 +3624,14 @@ export default function ThreeDTab({ floor, project, onStatusChange, onEntityUpda
             <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('washer')}>Washer</button>
             <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('sink')}>Sink</button>
             <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('toilet')}>Toilet</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('conference_table')}>Conf Tbl</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('bookshelf')}>Shelf</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('tree')}>Tree</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('ev_bay')}>EV Bay</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('solar_panel')}>Solar</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('sprinkler')}>Sprinkler</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('diffuser')}>Diffuser</button>
+            <button className="btn ghost" style={{ fontSize: 10 }} onClick={() => insertQuickAsset('pump')}>Pump</button>
           </div>
         </div>
 

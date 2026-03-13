@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Search, Package, ChevronDown, ChevronRight } from 'lucide-react';
-import { ALL_ASSETS, ASSET_CATEGORIES, searchAssets, assetToBlockDef } from '../lib/assetLibrary';
-import type { AssetCategory, AssetEntry } from '../lib/assetLibrary';
+import { ALL_ASSETS, ASSET_CATEGORIES, ASSET_PACKS, searchAssets, assetToBlockDef } from '../lib/assetLibrary';
+import type { AssetCategory, AssetEntry, AssetPack } from '../lib/assetLibrary';
 import type { BlockDef } from '../lib/adf';
 import './AssetLibrary.css';
 
@@ -11,9 +11,14 @@ interface Props {
 
 export default function AssetLibrary({ onInsertAsset }: Props) {
   const [query, setQuery] = useState('');
+  const [packFilter, setPackFilter] = useState<'all' | AssetPack>('all');
   const [expandedCat, setExpandedCat] = useState<AssetCategory | null>('doors');
 
-  const filtered = useMemo(() => searchAssets(query), [query]);
+  const filtered = useMemo(() => {
+    const matched = searchAssets(query);
+    if (packFilter === 'all') return matched;
+    return matched.filter(asset => asset.pack === packFilter);
+  }, [packFilter, query]);
 
   const grouped = useMemo(() => {
     const map = new Map<AssetCategory, AssetEntry[]>();
@@ -47,6 +52,26 @@ export default function AssetLibrary({ onInsertAsset }: Props) {
         />
       </div>
 
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+        <button
+          className={`btn ghost${packFilter === 'all' ? ' active' : ''}`}
+          style={{ fontSize: 10, padding: '2px 6px' }}
+          onClick={() => setPackFilter('all')}
+        >
+          All Packs
+        </button>
+        {ASSET_PACKS.map(pack => (
+          <button
+            key={pack}
+            className={`btn ghost${packFilter === pack ? ' active' : ''}`}
+            style={{ fontSize: 10, padding: '2px 6px' }}
+            onClick={() => setPackFilter(pack)}
+          >
+            {pack}
+          </button>
+        ))}
+      </div>
+
       <div className="asset-categories">
         {ASSET_CATEGORIES.map(cat => {
           const items = grouped.get(cat.key);
@@ -77,6 +102,12 @@ export default function AssetLibrary({ onInsertAsset }: Props) {
                       <div className="asset-item-info">
                         <span className="asset-item-name">{asset.name}</span>
                         <span className="asset-item-size">{asset.width}×{asset.height}</span>
+                        {(asset.pack || asset.source) && (
+                          <span className="asset-item-size" style={{ fontSize: 9 }}>
+                            {asset.pack || asset.source}
+                            {asset.license ? ` · ${asset.license}` : ''}
+                          </span>
+                        )}
                       </div>
                     </button>
                   ))}

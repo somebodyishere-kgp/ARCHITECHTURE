@@ -14,6 +14,8 @@ export type AssetCategory =
   | 'electrical' | 'plumbing' | 'hvac' | 'fire-protection'
   | 'structural' | 'site' | 'roofs' | 'stairs';
 
+export type AssetPack = 'OpenArchitectSymbols' | 'LibreCADCommunity' | 'OpenBIMComponents';
+
 export interface AssetEntry {
   name: string;
   category: AssetCategory;
@@ -21,6 +23,9 @@ export interface AssetEntry {
   width: number;         // bounding box width (mm)
   height: number;        // bounding box height (mm) [depth in plan]
   tags: string[];
+  pack?: AssetPack;
+  source?: string;
+  license?: string;
   buildEntities: () => AnyEntity[];
 }
 
@@ -1064,6 +1069,189 @@ const SITE_ASSETS: AssetEntry[] = [
   },
 ];
 
+// ─── Open-source expansion pack ─────────────────────────────────────────────
+const OPEN_SOURCE_PLUS_ASSETS: AssetEntry[] = [
+  {
+    name: 'EV Charger Bay',
+    category: 'site',
+    description: 'EV charging bay marker and parking block, 3000x5500mm',
+    width: 3000,
+    height: 5500,
+    tags: ['ev', 'charging', 'parking', 'site'],
+    pack: 'OpenBIMComponents',
+    source: 'OpenBIM Components',
+    license: 'CC-BY 4.0',
+    buildEntities: () => [
+      R(0, 0, 3000, 5500, 'Paving'),
+      L(0, 0, 3000, 0, 'Paving'),
+      C(1500, 4400, 320, 'Paving'),
+      L(1500, 4720, 1500, 5120, 'Paving'),
+      L(1200, 5000, 1800, 5000, 'Paving'),
+    ],
+  },
+  {
+    name: 'Bike Rack 6 Slot',
+    category: 'site',
+    description: 'Outdoor bicycle rack symbol, 2400x800mm',
+    width: 2400,
+    height: 800,
+    tags: ['bike', 'rack', 'mobility', 'site'],
+    pack: 'LibreCADCommunity',
+    source: 'LibreCAD Community Blocks',
+    license: 'GPL-compatible',
+    buildEntities: () => [
+      R(0, 0, 2400, 800, 'Landscape'),
+      C(250, 400, 180, 'Landscape'),
+      C(650, 400, 180, 'Landscape'),
+      C(1050, 400, 180, 'Landscape'),
+      C(1450, 400, 180, 'Landscape'),
+      C(1850, 400, 180, 'Landscape'),
+      C(2250, 400, 140, 'Landscape'),
+    ],
+  },
+  {
+    name: 'Solar Panel Array 3x2',
+    category: 'roofs',
+    description: 'Roof-mounted PV panel array, 3600x2400mm',
+    width: 3600,
+    height: 2400,
+    tags: ['solar', 'pv', 'roof', 'sustainability'],
+    pack: 'OpenBIMComponents',
+    source: 'OpenBIM Components',
+    license: 'CC-BY 4.0',
+    buildEntities: () => [
+      R(0, 0, 3600, 2400, 'Roof'),
+      L(1200, 0, 1200, 2400, 'Roof'),
+      L(2400, 0, 2400, 2400, 'Roof'),
+      L(0, 1200, 3600, 1200, 'Roof'),
+    ],
+  },
+  {
+    name: 'Skylight Module',
+    category: 'roofs',
+    description: 'Rectangular skylight with frame, 1800x1200mm',
+    width: 1800,
+    height: 1200,
+    tags: ['skylight', 'roof', 'daylight'],
+    pack: 'OpenArchitectSymbols',
+    source: 'Open Architect Symbols',
+    license: 'OFL',
+    buildEntities: () => [
+      R(0, 0, 1800, 1200, 'Roof'),
+      R(120, 120, 1680, 1080, 'Roof'),
+      L(120, 120, 1680, 1080, 'Roof'),
+      L(1680, 120, 120, 1080, 'Roof'),
+    ],
+  },
+  {
+    name: 'AHU Unit',
+    category: 'hvac',
+    description: 'Air handling unit plan symbol, 2200x1200mm',
+    width: 2200,
+    height: 1200,
+    tags: ['ahu', 'hvac', 'mechanical'],
+    pack: 'OpenBIMComponents',
+    source: 'OpenBIM Components',
+    license: 'CC-BY 4.0',
+    buildEntities: () => [
+      R(0, 0, 2200, 1200, 'HVAC'),
+      L(700, 0, 700, 1200, 'HVAC'),
+      L(1500, 0, 1500, 1200, 'HVAC'),
+      C(350, 600, 130, 'HVAC'),
+      C(1850, 600, 130, 'HVAC'),
+    ],
+  },
+  {
+    name: 'Chilled Water Pump',
+    category: 'hvac',
+    description: 'Pump with flow direction annotation, 900x900mm',
+    width: 900,
+    height: 900,
+    tags: ['pump', 'hvac', 'water'],
+    pack: 'LibreCADCommunity',
+    source: 'LibreCAD Community Blocks',
+    license: 'GPL-compatible',
+    buildEntities: () => [
+      C(450, 450, 350, 'HVAC'),
+      R(350, 130, 550, 250, 'HVAC'),
+      L(450, 150, 450, 0, 'HVAC'),
+      L(390, 60, 450, 0, 'HVAC'),
+      L(510, 60, 450, 0, 'HVAC'),
+    ],
+  },
+  {
+    name: 'Rainwater Harvest Pit',
+    category: 'plumbing',
+    description: 'Rainwater recharge pit detail in plan, 1500x1500mm',
+    width: 1500,
+    height: 1500,
+    tags: ['rainwater', 'harvesting', 'plumbing', 'sustainability'],
+    pack: 'OpenArchitectSymbols',
+    source: 'Open Architect Symbols',
+    license: 'OFL',
+    buildEntities: () => [
+      C(750, 750, 700, 'Plumbing'),
+      C(750, 750, 500, 'Plumbing'),
+      C(750, 750, 300, 'Plumbing'),
+      L(750, 0, 750, 1500, 'Plumbing'),
+      L(0, 750, 1500, 750, 'Plumbing'),
+    ],
+  },
+  {
+    name: 'Fire Extinguisher Marker',
+    category: 'fire-protection',
+    description: 'Wall-mounted extinguisher symbol, 400x650mm',
+    width: 400,
+    height: 650,
+    tags: ['fire', 'extinguisher', 'safety'],
+    pack: 'OpenArchitectSymbols',
+    source: 'Open Architect Symbols',
+    license: 'OFL',
+    buildEntities: () => [
+      R(60, 60, 340, 560, 'Fire'),
+      C(200, 140, 70, 'Fire'),
+      L(200, 210, 200, 620, 'Fire'),
+      L(120, 500, 280, 500, 'Fire'),
+    ],
+  },
+  {
+    name: 'Smoke Detector Marker',
+    category: 'fire-protection',
+    description: 'Ceiling smoke detector symbol, 500x500mm',
+    width: 500,
+    height: 500,
+    tags: ['smoke', 'detector', 'fire', 'safety'],
+    pack: 'OpenBIMComponents',
+    source: 'OpenBIM Components',
+    license: 'CC-BY 4.0',
+    buildEntities: () => [
+      C(250, 250, 220, 'Fire'),
+      C(250, 250, 90, 'Fire'),
+      L(40, 250, 460, 250, 'Fire'),
+      L(250, 40, 250, 460, 'Fire'),
+    ],
+  },
+  {
+    name: 'Auditorium Seating Bay',
+    category: 'furniture-office',
+    description: 'Modular 3-row seating bay for halls, 2400x1800mm',
+    width: 2400,
+    height: 1800,
+    tags: ['auditorium', 'seating', 'hall'],
+    pack: 'LibreCADCommunity',
+    source: 'LibreCAD Community Blocks',
+    license: 'GPL-compatible',
+    buildEntities: () => [
+      R(0, 0, 2400, 1800, 'Furniture'),
+      L(0, 600, 2400, 600, 'Furniture'),
+      L(0, 1200, 2400, 1200, 'Furniture'),
+      C(300, 300, 120, 'Furniture'), C(900, 300, 120, 'Furniture'), C(1500, 300, 120, 'Furniture'), C(2100, 300, 120, 'Furniture'),
+      C(300, 900, 120, 'Furniture'), C(900, 900, 120, 'Furniture'), C(1500, 900, 120, 'Furniture'), C(2100, 900, 120, 'Furniture'),
+      C(300, 1500, 120, 'Furniture'), C(900, 1500, 120, 'Furniture'), C(1500, 1500, 120, 'Furniture'), C(2100, 1500, 120, 'Furniture'),
+    ],
+  },
+];
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1084,7 +1272,10 @@ export const ALL_ASSETS: AssetEntry[] = [
   ...STAIR_ASSETS,
   ...STRUCTURAL_ASSETS,
   ...SITE_ASSETS,
+  ...OPEN_SOURCE_PLUS_ASSETS,
 ];
+
+export const ASSET_PACKS: AssetPack[] = ['OpenArchitectSymbols', 'LibreCADCommunity', 'OpenBIMComponents'];
 
 export const ASSET_CATEGORIES: { key: AssetCategory; label: string }[] = [
   { key: 'doors', label: 'Doors' },
@@ -1098,6 +1289,7 @@ export const ASSET_CATEGORIES: { key: AssetCategory; label: string }[] = [
   { key: 'electrical', label: 'Electrical' },
   { key: 'plumbing', label: 'Plumbing' },
   { key: 'hvac', label: 'HVAC' },
+  { key: 'fire-protection', label: 'Fire Protection' },
   { key: 'roofs', label: 'Roof Plans' },
   { key: 'stairs', label: 'Stairs' },
   { key: 'structural', label: 'Structural' },
@@ -1121,6 +1313,8 @@ export function searchAssets(query: string): AssetEntry[] {
   return ALL_ASSETS.filter(a =>
     a.name.toLowerCase().includes(q) ||
     a.description.toLowerCase().includes(q) ||
-    a.tags.some(t => t.includes(q))
+    a.tags.some(t => t.includes(q)) ||
+    (a.pack || '').toLowerCase().includes(q) ||
+    (a.source || '').toLowerCase().includes(q)
   );
 }
