@@ -2,6 +2,7 @@ import {
   ADFProject,
   ConstraintRuleDefinition,
   DesignBranchGraph,
+  InfiniteDesignGraph,
   FloorPlan,
   ProjectMigrationEntry,
   ProjectPresetLibrary,
@@ -11,7 +12,7 @@ import {
   uid,
 } from './adf';
 
-export const CURRENT_PROJECT_SCHEMA = 6;
+export const CURRENT_PROJECT_SCHEMA = 7;
 
 export interface MigrationReport {
   from: number;
@@ -57,6 +58,53 @@ function ensureTimeline(value: unknown): ProjectTimeline {
   return {
     activeTime: typeof src.activeTime === 'number' ? src.activeTime : 0,
     tracks: Array.isArray(src.tracks) ? (src.tracks as ProjectTimeline['tracks']) : [],
+  };
+}
+
+function ensureDesignGraph(value: unknown, branchGraph: DesignBranchGraph): InfiniteDesignGraph {
+  const src = isRecord(value) ? value : {};
+  const nodes = Array.isArray(src.nodes) ? (src.nodes as InfiniteDesignGraph['nodes']) : [];
+  const edges = Array.isArray(src.edges) ? (src.edges as InfiniteDesignGraph['edges']) : [];
+
+  const now = new Date().toISOString();
+  const byBranchId = new Map(nodes.map(node => [node.branchId, node]));
+  const normalizedNodes = [...nodes];
+
+  for (const branch of branchGraph.nodes) {
+    if (byBranchId.has(branch.id)) continue;
+    normalizedNodes.push({
+      id: uid(),
+      branchId: branch.id,
+      name: branch.name,
+      createdAt: branch.createdAt || now,
+      objective: branch.objective,
+      tags: branch.parentId ? ['variant'] : ['root'],
+    });
+  }
+
+  const activeNode = normalizedNodes.find(node => node.branchId === branchGraph.activeBranchId) || normalizedNodes[0];
+  if (!activeNode) {
+    const rootBranch = branchGraph.nodes[0] || { id: uid(), name: 'Main', createdAt: now };
+    return {
+      activeNodeId: rootBranch.id,
+      nodes: [{
+        id: rootBranch.id,
+        branchId: rootBranch.id,
+        name: rootBranch.name,
+        createdAt: rootBranch.createdAt,
+        objective: 'Recovered baseline',
+        tags: ['root'],
+      }],
+      edges: [],
+    };
+  }
+
+  return {
+    activeNodeId: typeof src.activeNodeId === 'string'
+      ? src.activeNodeId
+      : activeNode.id,
+    nodes: normalizedNodes,
+    edges,
   };
 }
 
@@ -114,6 +162,7 @@ function normalizeBaseProject(raw: unknown): ADFProject {
       ? (raw.migrationHistory as ProjectMigrationEntry[])
       : [],
     branchGraph: ensureBranchGraph(raw.branchGraph),
+    designGraph: ensureDesignGraph(raw.designGraph, ensureBranchGraph(raw.branchGraph)),
     timeline: ensureTimeline(raw.timeline),
     constraintRules: ensureConstraintRules(raw.constraintRules),
   };
@@ -195,11 +244,26 @@ export function migrateProjectData(raw: unknown): { project: ADFProject; report:
       continue;
     }
 
+    if (schemaVersion === 6) {
+      project.branchGraph = ensureBranchGraph(project.branchGraph);
+      project.designGraph = ensureDesignGraph(project.designGraph, project.branchGraph);
+      const step: ProjectMigrationEntry = {
+        from: 6,
+        to: 7,
+        timestamp: new Date().toISOString(),
+        notes: 'Initialized infinite design graph and synchronized branch lineage nodes.',
+      };
+      applied.push(step);
+      schemaVersion = 7;
+      continue;
+    }
+
     break;
   }
 
   project.schemaVersion = Math.max(schemaVersion, CURRENT_PROJECT_SCHEMA);
   project.branchGraph = ensureBranchGraph(project.branchGraph);
+  project.designGraph = ensureDesignGraph(project.designGraph, project.branchGraph);
   project.timeline = ensureTimeline(project.timeline);
   project.constraintRules = ensureConstraintRules(project.constraintRules);
   project.floors = project.floors.map(ensureFloorDependencyMetadata);

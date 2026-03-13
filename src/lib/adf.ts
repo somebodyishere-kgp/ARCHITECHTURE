@@ -879,6 +879,35 @@ export interface DesignBranchGraph {
   nodes: DesignBranchNode[];
 }
 
+export interface DesignGraphNode {
+  id: string;
+  branchId: string;
+  name: string;
+  createdAt: string;
+  objective?: string;
+  tags: string[];
+  metrics?: {
+    constraintWarnings: number;
+    adjustments: number;
+    iterations: number;
+    lastUpdated: string;
+  };
+}
+
+export interface DesignGraphEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relation: 'fork' | 'merge' | 'promote' | 'optimize';
+  createdAt: string;
+}
+
+export interface InfiniteDesignGraph {
+  activeNodeId: string;
+  nodes: DesignGraphNode[];
+  edges: DesignGraphEdge[];
+}
+
 export interface TimelineEvent {
   id: string;
   time: number;
@@ -916,6 +945,7 @@ export interface ADFProject {
   presetLibrary?: ProjectPresetLibrary;
   migrationHistory?: ProjectMigrationEntry[];
   branchGraph?: DesignBranchGraph;
+  designGraph?: InfiniteDesignGraph;
   timeline?: ProjectTimeline;
   constraintRules?: ConstraintRuleDefinition[];
   buildingCodes?: Record<string, unknown>;
@@ -942,6 +972,7 @@ export function uid(): string {
 
 export function createProject(name = 'New Project'): ADFProject {
   const rootBranchId = uid();
+  const rootGraphNodeId = uid();
   return {
     version: '1.0',
     schemaVersion: 6,
@@ -960,6 +991,18 @@ export function createProject(name = 'New Project'): ADFProject {
     branchGraph: {
       activeBranchId: rootBranchId,
       nodes: [{ id: rootBranchId, name: 'Main', createdAt: new Date().toISOString() }],
+    },
+    designGraph: {
+      activeNodeId: rootGraphNodeId,
+      nodes: [{
+        id: rootGraphNodeId,
+        branchId: rootBranchId,
+        name: 'Main',
+        createdAt: new Date().toISOString(),
+        objective: 'Baseline concept',
+        tags: ['root'],
+      }],
+      edges: [],
     },
     timeline: {
       activeTime: 0,

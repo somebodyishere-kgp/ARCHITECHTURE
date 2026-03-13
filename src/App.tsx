@@ -5,6 +5,7 @@ import { Layers, Box, FileText, Cpu, Save, FilePlus, Keyboard } from 'lucide-rea
 import { ADFProject, ProjectPresetLibrary, TimelineTrack, createProject, uid } from './lib/adf';
 import { CURRENT_PROJECT_SCHEMA, migrateProjectData } from './lib/migrations';
 import { applyBranchMerge, applyBranchMergeResolutions, BranchMergePreview, captureBranchSnapshot, compareBranches, createBranchFromActive, ensureGraph, previewBranchMerge, switchToBranch } from './lib/branchGraph';
+import { activateDesignNode, createDesignVariant, promoteDesignNode, recordActiveNodeMetrics, syncDesignGraph, updateDesignNodeObjective } from './lib/designGraph';
 import { runLivingBuildingSolver } from './lib/livingSolver';
 import AIChat from './components/AIChat';
 import './App.css';
@@ -13,8 +14,9 @@ const PlansTab = lazy(() => import('./tabs/PlansTab'));
 const ThreeDTab = lazy(() => import('./tabs/ThreeDTab'));
 const DocsTab = lazy(() => import('./tabs/DocsTab'));
 const KeybindingsTab = lazy(() => import('./tabs/KeybindingsTab'));
+const GraphTab = lazy(() => import('./tabs/GraphTab'));
 
-type TabId = 'plans' | '3d' | 'docs' | 'keys';
+type TabId = 'plans' | '3d' | 'docs' | 'keys' | 'graph';
 
 interface Tab { id: TabId; label: string; icon: React.ReactNode; shortcut: string; }
 
@@ -26,6 +28,7 @@ const TABS: Tab[] = [
   { id: '3d',    label: '3D / Render',   icon: <Box size={14}/>,      shortcut: '2' },
   { id: 'docs',  label: 'Documentation', icon: <FileText size={14}/>, shortcut: '3' },
   { id: 'keys',  label: 'Keybindings',   icon: <Keyboard size={14}/>, shortcut: '4' },
+  { id: 'graph', label: 'Design Graph',  icon: <Cpu size={14}/>,      shortcut: '5' },
 ];
 
 export default function App() {
@@ -128,6 +131,7 @@ export default function App() {
         else if (event.key === '2') setActiveTab('3d');
         else if (event.key === '3') setActiveTab('docs');
         else if (event.key === '4') setActiveTab('keys');
+        else if (event.key === '5') setActiveTab('graph');
       }
     };
 
@@ -254,12 +258,34 @@ export default function App() {
   const handleCreateBranch = useCallback(() => {
     const branchName = prompt('Branch name', `Branch ${Math.max(1, (project.branchGraph?.nodes.length || 1))}`);
     if (!branchName) return;
+    const objective = prompt('Design objective', 'Explore alternative massing') || undefined;
     updateProject(prev => {
-      const result = createBranchFromActive(prev, branchName);
-      return result.project;
+      const result = createDesignVariant(prev, branchName, objective);
+      return syncDesignGraph(result.project);
     });
-    setStatusMsg(`Created branch: ${branchName}`);
+    setStatusMsg(`Created design variant: ${branchName}`);
   }, [project.branchGraph?.nodes.length, updateProject]);
+
+  const handleActivateGraphNode = useCallback((nodeId: string) => {
+    try {
+      updateProject(prev => syncDesignGraph(activateDesignNode(prev, nodeId)));
+      setStatusMsg('Activated design node');
+    } catch (err) {
+      setStatusMsg(`Graph activation failed: ${err}`);
+    }
+  }, [updateProject]);
+
+  const handlePromoteGraphNode = useCallback((nodeId: string) => {
+    updateProject(prev => syncDesignGraph(promoteDesignNode(prev, nodeId)));
+    setStatusMsg('Design node promoted');
+  }, [updateProject]);
+
+  const handleEditGraphObjective = useCallback((nodeId: string) => {
+    const objective = prompt('Objective for this design node', 'Improve daylight and reduce embodied carbon');
+    if (!objective) return;
+    updateProject(prev => syncDesignGraph(updateDesignNodeObjective(prev, nodeId, objective)));
+    setStatusMsg('Design objective updated');
+  }, [updateProject]);
 
   const handleSwitchBranch = useCallback((branchId: string) => {
     try {
@@ -765,7 +791,7 @@ export default function App() {
           {[
             { label: 'File', items: ['New Project', 'Open…', 'Save', 'Save As…', '---', 'Export DXF', 'Export PDF', '---', 'Exit'] },
             { label: 'Edit', items: ['Undo', 'Redo', '---', 'Select All', 'Delete Selected'] },
-            { label: 'View', items: ['Plans (1)', '3D / Render (2)', 'Documentation (3)', 'Keybindings (4)', '---', 'Toggle AI Panel', 'Zoom Fit'] },
+            { label: 'View', items: ['Plans (1)', '3D / Render (2)', 'Documentation (3)', 'Keybindings (4)', 'Design Graph (5)', '---', 'Toggle AI Panel', 'Zoom Fit'] },
             { label: 'Help', items: ['Documentation', 'About ArchFlow'] },
           ].map(menu => (
             <MenuDropdown key={menu.label} label={menu.label} items={menu.items}
@@ -785,6 +811,7 @@ export default function App() {
                 else if (item === '3D / Render (2)') setActiveTab('3d');
                 else if (item === 'Documentation (3)') setActiveTab('docs');
                 else if (item === 'Keybindings (4)') setActiveTab('keys');
+                else if (item === 'Design Graph (5)') setActiveTab('graph');
                 else if (item === 'Toggle AI Panel') setShowAI(v => !v);
                 else if (item === 'Zoom Fit') window.dispatchEvent(new CustomEvent('archflow:zoomfit'));
               }}
@@ -991,7 +1018,12 @@ export default function App() {
                         recentConstraintReports,
                       },
                     };
-                    return { ...p, floors };
+                    const withFloors = { ...p, floors };
+                    return syncDesignGraph(recordActiveNodeMetrics(withFloors, {
+                      constraintWarnings: solved.constraintReport.warningCount,
+                      adjustments: solved.convergence.totalAdjustments,
+                      iterations: solved.convergence.iterations,
+                    }));
                   });
                 }}
                 onLayersChange={(layers) => updateProject(p => ({ ...p, layers }))}
@@ -1057,7 +1089,12 @@ export default function App() {
                         recentConstraintReports,
                       },
                     };
-                    return { ...p, floors };
+                    const withFloors = { ...p, floors };
+                    return syncDesignGraph(recordActiveNodeMetrics(withFloors, {
+                      constraintWarnings: solved.constraintReport.warningCount,
+                      adjustments: solved.convergence.totalAdjustments,
+                      iterations: solved.convergence.iterations,
+                    }));
                   });
                 }}
                 onPresetLibraryChange={(library: ProjectPresetLibrary) => {
@@ -1068,6 +1105,15 @@ export default function App() {
               <DocsTab project={project} onProjectChange={setProject} onStatusChange={setStatusMsg} />
             )}
             {activeTab === 'keys' && <KeybindingsTab />}
+            {activeTab === 'graph' && (
+              <GraphTab
+                project={project}
+                onActivateNode={handleActivateGraphNode}
+                onCreateVariant={handleCreateBranch}
+                onPromoteNode={handlePromoteGraphNode}
+                onEditObjective={handleEditGraphObjective}
+              />
+            )}
           </Suspense>
         </div>
 
