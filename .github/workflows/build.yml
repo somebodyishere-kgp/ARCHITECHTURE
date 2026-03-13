@@ -7,17 +7,6 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: Create a GitHub release after build
-        required: false
-        default: false
-        type: boolean
-      release_tag:
-        description: Release tag for manual runs (example: v0.2.0)
-        required: false
-        default: ''
-        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -121,7 +110,7 @@ jobs:
   # ─── Create GitHub Release on tag push ──────────────────────────────────────
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,22 +126,14 @@ jobs:
           find artifacts -type f \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \) -exec cp {} release-files/ \;
           ls -la release-files/
 
-      - name: Validate manual release tag
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
-        run: |
-          if [ -z "${{ github.event.inputs.release_tag }}" ]; then
-            echo "release_tag is required when create_release=true"
-            exit 1
-          fi
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.event.inputs.release_tag }}
+          tag_name: ${{ github.ref_name }}
           draft: false
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          prerelease: false
           generate_release_notes: true
-          name: ArchFlow ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.event.inputs.release_tag }}
+          name: ArchFlow ${{ github.ref_name }}
           body: |
             ## ArchFlow Desktop App
             
