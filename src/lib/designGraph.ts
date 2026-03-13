@@ -5,6 +5,88 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+const OBJECTIVE_KEYWORD_WEIGHTS: Record<string, number> = {
+  daylight: 8,
+  carbon: 10,
+  embodied: 7,
+  energy: 9,
+  comfort: 6,
+  ventilation: 6,
+  structure: 5,
+  cost: 7,
+  lifecycle: 7,
+  adaptive: 6,
+};
+
+export interface DesignNodeFitness {
+  nodeId: string;
+  score: number;
+  objectiveScore: number;
+  stabilityScore: number;
+  penaltyScore: number;
+  rank: number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function tokenizeObjective(objective?: string): string[] {
+  if (!objective) return [];
+  return objective
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function scoreObjectiveText(objective?: string): number {
+  const tokens = tokenizeObjective(objective);
+  if (tokens.length === 0) return 20;
+
+  const unique = new Set(tokens);
+  let weighted = 0;
+  unique.forEach(token => {
+    weighted += OBJECTIVE_KEYWORD_WEIGHTS[token] || 1;
+  });
+
+  const detailBonus = clamp(unique.size * 1.5, 0, 20);
+  return clamp(20 + weighted + detailBonus, 0, 70);
+}
+
+export function scoreDesignNodeFitness(node: DesignGraphNode): Omit<DesignNodeFitness, 'rank'> {
+  const objectiveScore = scoreObjectiveText(node.objective);
+  const warningPenalty = (node.metrics?.constraintWarnings || 0) * 6;
+  const adjustmentPenalty = (node.metrics?.adjustments || 0) * 2;
+  const iterationPenalty = (node.metrics?.iterations || 0) * 1.5;
+  const promotedBonus = node.tags.includes('promoted') ? 8 : 0;
+  const stabilityScore = clamp(40 - warningPenalty - adjustmentPenalty - iterationPenalty, 0, 40);
+  const penaltyScore = clamp(warningPenalty + adjustmentPenalty + iterationPenalty, 0, 100);
+  const score = clamp(objectiveScore + stabilityScore + promotedBonus, 0, 100);
+
+  return {
+    nodeId: node.id,
+    score,
+    objectiveScore,
+    stabilityScore,
+    penaltyScore,
+  };
+}
+
+export function rankDesignNodes(graph: InfiniteDesignGraph): DesignNodeFitness[] {
+  const scored = graph.nodes.map(node => ({
+    ...scoreDesignNodeFitness(node),
+    rank: 0,
+  }));
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.penaltyScore !== b.penaltyScore) return a.penaltyScore - b.penaltyScore;
+    return a.nodeId.localeCompare(b.nodeId);
+  });
+
+  return scored.map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
 export function ensureDesignGraph(project: ADFProject): InfiniteDesignGraph {
   const branchGraph = ensureGraph(project);
   const base = project.designGraph;
