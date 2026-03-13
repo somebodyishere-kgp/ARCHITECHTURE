@@ -48,11 +48,20 @@ export interface ProgramAreaTarget {
   area_m2: number;
 }
 
+export interface CandidateProposal {
+  id: string;
+  strategy: string;
+  prompt: string;
+  confidence: number;
+}
+
 export interface PipelineResult {
+  auditId: string;
   intent: DesignIntent;
   stages: PipelineAuditStage[];
   designSpec: Record<string, unknown>;
   executionPrompt: string;
+  proposals: CandidateProposal[];
 }
 
 interface PipelineInput {
@@ -66,6 +75,29 @@ const PROJECT_TYPE_KEYWORDS = ['museum', 'auditorium', 'office', 'hospital', 'sc
 
 function toWords(text: string): string[] {
   return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function hashText(input: string): string {
+  let h = 0;
+  for (let i = 0; i < input.length; i++) {
+    h = ((h << 5) - h) + input.charCodeAt(i);
+    h |= 0;
+  }
+  return `af-${Math.abs(h).toString(36)}`;
+}
+
+function summarizeProjectContext(project: ADFProject): string[] {
+  const floorCount = project.floors.length;
+  const entities = project.floors.reduce((sum, floor) => sum + floor.entities.length, 0);
+  const activeBranch = project.branchGraph?.nodes.find(node => node.id === project.branchGraph?.activeBranchId)?.name || 'Main';
+  const ruleCount = project.constraintRules?.length || 0;
+  return [
+    `project=${project.projectName}`,
+    `floors=${floorCount}`,
+    `entities=${entities}`,
+    `active_branch=${activeBranch}`,
+    `constraint_rules=${ruleCount}`,
+  ];
 }
 
 function parseCapacity(text: string): number | undefined {
@@ -203,6 +235,18 @@ function toExecutionPrompt(intent: DesignIntent, programs: ProgramAreaTarget[], 
   ].join(' ');
 }
 
+function buildCandidateProposals(basePrompt: string, strategies: string[]): CandidateProposal[] {
+  return strategies.slice(0, 3).map((strategy, index) => {
+    const confidence = Math.max(0.55, 0.88 - index * 0.08);
+    return {
+      id: hashText(`${basePrompt}|${strategy}|${index}`),
+      strategy,
+      prompt: `${basePrompt} Preferred massing strategy: ${strategy}. Keep egress and circulation robust for the target occupancy.`,
+      confidence: Number(confidence.toFixed(2)),
+    };
+  });
+}
+
 export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
   const prompt = input.prompt.trim();
   const fallbackLocation = input.project.location || 'unspecified';
@@ -213,6 +257,16 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
   const rules = parseExplicitRules(prompt);
   const archStyle = inferStyle(prompt);
   const functionalProgram = buildFunctionalProgram(projectType, capacity);
+  const projectContext = summarizeProjectContext(input.project);
+  const auditId = hashText([
+    prompt,
+    projectType,
+    String(capacity || ''),
+    String(dimensions?.[0] || ''),
+    String(dimensions?.[1] || ''),
+    location,
+    projectContext.join('|'),
+  ].join('|'));
 
   const intent: DesignIntent = {
     project_type: projectType,
@@ -232,9 +286,10 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
       `location=${intent.site.location}`,
       `capacity=${intent.capacity ?? 'unspecified'}`,
       `explicit_rules=${intent.explicit_rules.length}`,
+      ...projectContext,
     ],
     deterministic: true,
-    output: { intent },
+    output: { intent, audit_id: auditId },
   };
 
   const climateHints = /kolkata|mumbai|goa|chennai/i.test(location)
@@ -275,6 +330,7 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
     output: {
       hard_constraints: hardConstraints,
       code_keys: Object.keys(input.buildingCodes || {}).slice(0, 8),
+      project_context: projectContext,
     },
   };
 
@@ -339,14 +395,20 @@ export function runArchflowAIPipeline(input: PipelineInput): PipelineResult {
         style_rules: styleGuidelines,
         program_areas_m2: programAreas,
         candidate_strategies: candidateStrategies,
+        project_context: projectContext,
+        audit_id: auditId,
       },
     },
   };
 
+  const proposals = buildCandidateProposals(executionPrompt, candidateStrategies);
+
   return {
+    auditId,
     intent,
     stages: [stage1, stage2, stage3, stage4, stage5, stage6],
     designSpec: stage6.output.design_spec as Record<string, unknown>,
     executionPrompt,
+    proposals,
   };
 }

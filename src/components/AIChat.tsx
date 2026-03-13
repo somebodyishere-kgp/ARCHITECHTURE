@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Send, Bot, User, Sparkles, Loader, ChevronDown } from 'lucide-react';
 import { ADFProject } from '../lib/adf';
-import { runArchflowAIPipeline } from '../lib/aiPipeline';
+import { CandidateProposal, runArchflowAIPipeline } from '../lib/aiPipeline';
 import './AIChat.css';
 
 interface Props {
@@ -29,6 +29,21 @@ const EXAMPLE_PROMPTS = [
 ];
 
 const DEFAULT_OPENROUTER_MODEL = 'openrouter/hunter-alpha';
+
+function scoreLayout(layout: Record<string, unknown>, confidence: number): number {
+  const entities = Array.isArray(layout.entities) ? layout.entities.length : 0;
+  const area = typeof layout.total_area === 'number' ? layout.total_area : 0;
+  const compactnessPenalty = area > 0 ? Math.min(20, Math.abs(area - 1800) / 120) : 10;
+  const richness = Math.min(40, entities / 4);
+  const confidenceScore = confidence * 50;
+  return Math.max(0, Math.min(100, confidenceScore + richness - compactnessPenalty));
+}
+
+function summarizeConversation(messages: Message[]): string {
+  const recent = messages.filter(m => m.role === 'user').slice(-3).map(m => m.content.trim()).filter(Boolean);
+  if (recent.length === 0) return '';
+  return `Conversation context: ${recent.join(' | ')}`;
+}
 
 export default function AIChat({ project, onApplyLayout, onClose, onStatusChange }: Props) {
   const [messages, setMessages] = useState<Message[]>([{
@@ -80,7 +95,7 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
       }
 
       const pipeline = runArchflowAIPipeline({
-        prompt: text,
+        prompt: `${summarizeConversation(messages)}\nCurrent request: ${text}`.trim(),
         project,
         buildingCodes,
       });
@@ -100,32 +115,59 @@ export default function AIChat({ project, onApplyLayout, onClose, onStatusChange
         content: `Structured design specification:\n${designSpecPreview}`,
       });
 
-      addMessage({ role: 'assistant', content: 'Execution phase: generating geometry proposal from validated design spec.' });
+      const selectedProposals: CandidateProposal[] = (apiKey ? pipeline.proposals : pipeline.proposals.slice(0, 1));
+      addMessage({ role: 'assistant', content: `Execution phase: generating ${selectedProposals.length} design option(s) and ranking them.` });
 
-      const layout = await invoke<Record<string, unknown>>('generate_floor_plan_ai', {
-        prompt: pipeline.executionPrompt,
-        apiKey: apiKey || null,
-        model: modelName || DEFAULT_OPENROUTER_MODEL,
+      const generated: Array<{
+        proposal: CandidateProposal;
+        layout: Record<string, unknown>;
+        wrappedLayout: Record<string, unknown>;
+        score: number;
+      }> = [];
+
+      for (const proposal of selectedProposals) {
+        try {
+          const layout = await invoke<Record<string, unknown>>('generate_floor_plan_ai', {
+            prompt: proposal.prompt,
+            apiKey: apiKey || null,
+            model: modelName || DEFAULT_OPENROUTER_MODEL,
+          });
+
+          const score = scoreLayout(layout, proposal.confidence);
+          const wrappedLayout: Record<string, unknown> = {
+            ...layout,
+            ai_pipeline: {
+              audit_id: pipeline.auditId,
+              stages: pipeline.stages,
+              design_spec: pipeline.designSpec,
+              execution_prompt: proposal.prompt,
+              proposal,
+              score,
+            },
+          };
+          generated.push({ proposal, layout, wrappedLayout, score });
+        } catch {
+          addMessage({ role: 'assistant', content: `Option failed for strategy: ${proposal.strategy}. Continuing with remaining proposals.` });
+        }
+      }
+
+      if (generated.length === 0) {
+        throw new Error('All candidate proposal generations failed.');
+      }
+
+      generated.sort((a, b) => b.score - a.score);
+      generated.forEach((option, index) => {
+        const entityCount = (option.layout.entities as unknown[])?.length ?? 0;
+        const area = typeof option.layout.total_area === 'number' ? option.layout.total_area.toFixed(0) : '?';
+        const recommendation = index === 0 ? ' (recommended)' : '';
+        addMessage({
+          role: 'assistant',
+          content: `Option ${index + 1}${recommendation}\n- Strategy: ${option.proposal.strategy}\n- Score: ${option.score.toFixed(1)}\n- Entities: ${entityCount}\n- Area: ${area} m2\n- Confidence: ${option.proposal.confidence}\n\nClick Apply to load this option into Plans tab.`,
+          layout: option.wrappedLayout,
+        });
       });
 
-      const wrappedLayout: Record<string, unknown> = {
-        ...layout,
-        ai_pipeline: {
-          stages: pipeline.stages,
-          design_spec: pipeline.designSpec,
-          execution_prompt: pipeline.executionPrompt,
-        },
-      };
-
-      const entityCount = (layout.entities as unknown[])?.length ?? 0;
-      const area = typeof layout.total_area === 'number' ? layout.total_area.toFixed(0) : '?';
-
-      addMessage({
-        role: 'assistant',
-        content: `Floor plan generated from the multi-stage pipeline.\n\n- ${entityCount} entities created\n- Approx. area: ${area} m2\n- Building type: ${layout.building_type || 'General'}\n\nReview in the Plans tab, then iterate with targeted prompts (daylight, height, circulation, energy).`,
-        layout: wrappedLayout,
-      });
-      onStatusChange('AI pipeline complete — proposal ready in Plans tab');
+      onStatusChange(`AI copilot complete — ${generated.length} ranked option(s) ready`);
     } catch (err) {
       addMessage({ role: 'assistant', content: `❌ Error generating floor plan: ${err}\n\nPlease try again or simplify your prompt.` });
       onStatusChange('AI generation failed');
